@@ -296,7 +296,7 @@ describe('authorizeWrite', () => {
         action: 'updateContactInfo',
         model: 'people',
         operation: 'patch',
-        fields: ['Email', 'MobilePhoneNumber', 'FirstName'],
+        fields: ['Email', 'FirstName'],
       };
       const result = authorizeWrite(mockCtx as OAuthRockContext, desc);
       expect(result.allowed).toBe(true);
@@ -378,6 +378,43 @@ describe('authorizeWrite', () => {
       };
       const result = authorizeWrite(mockCtx as OAuthRockContext, desc);
       expect(result.allowed).toBe(true);
+    });
+
+    it('should allow phonenumbers create with allowed fields', () => {
+      const desc: WriteDescriptor = {
+        tool: 'rock_people',
+        action: 'updateContactInfo',
+        model: 'phonenumbers',
+        operation: 'create',
+        fields: ['PersonId', 'NumberTypeValueId', 'Number'],
+      };
+      const result = authorizeWrite(mockCtx as OAuthRockContext, desc);
+      expect(result.allowed).toBe(true);
+    });
+
+    it('should allow phonenumbers patch with allowed fields', () => {
+      const desc: WriteDescriptor = {
+        tool: 'rock_people',
+        action: 'updateContactInfo',
+        model: 'phonenumbers',
+        operation: 'patch',
+        fields: ['Number', 'IsMessagingEnabled'],
+      };
+      const result = authorizeWrite(mockCtx as OAuthRockContext, desc);
+      expect(result.allowed).toBe(true);
+    });
+
+    it('should deny phonenumbers operations with disallowed fields', () => {
+      const desc: WriteDescriptor = {
+        tool: 'rock_people',
+        action: 'updateContactInfo',
+        model: 'phonenumbers',
+        operation: 'create',
+        fields: ['PersonId', 'NumberTypeValueId', 'DisallowedField'],
+      };
+      const result = authorizeWrite(mockCtx as OAuthRockContext, desc);
+      expect(result.allowed).toBe(false);
+      expect(result.code).toBe('FIELD_NOT_ALLOWED');
     });
   });
 });

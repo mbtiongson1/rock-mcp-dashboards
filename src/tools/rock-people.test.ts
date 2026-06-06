@@ -406,4 +406,310 @@ describe('rock_people tool', () => {
     expect(response.error?.code).toBe('PATCH_ATTRIBUTES_ERROR');
     expect(response.error?.message).toContain('v2');
   });
+
+  // Tests for updateContactInfo with phone number handling
+  it('updateContactInfo: dry-run should describe person and phone changes without mutation', async () => {
+    mockCtx.mode = 'readwrite';
+    mockCtx.scopes = new Set(['read', 'write']);
+
+    mockClient.get.mockResolvedValue([
+      { Id: 1, Value: 'Mobile', Guid: '407E7E45-7B2E-4FCD-9605-ECB1339F2453' },
+    ]); // DefinedValue for Mobile
+
+    const result = await rockPeopleTool.handle(
+      {
+        action: 'updateContactInfo',
+        personId: 123,
+        email: 'new@example.com',
+        phone: '+1234567890',
+        firstName: 'John',
+        dryRun: true,
+        commit: false,
+        reason: 'test update',
+      },
+      null,
+      mockCtx
+    );
+
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.ok).toBe(true);
+    expect(response.result.dryRun).toBe(true);
+    expect(response.result.committed).toBe(false);
+    expect(response.result.data).toBeDefined();
+    expect(response.result.data.Email).toBe('new@example.com');
+    expect(response.result.data.FirstName).toBe('John');
+    // dry-run should NOT include MobilePhoneNumber in the person patch
+    expect(response.result.data.MobilePhoneNumber).toBeUndefined();
+    // But should describe the phone intent somewhere
+    expect(response.result.phoneIntent).toBeDefined();
+    expect(response.result.phoneIntent.number).toBe('+1234567890');
+
+    // Verify no mutations occurred
+    expect(mockClient.patch).not.toHaveBeenCalled();
+    expect(mockClient.post).not.toHaveBeenCalled();
+  });
+
+  it('updateContactInfo: commit with no existing mobile number should POST PhoneNumber', async () => {
+    mockCtx.mode = 'readwrite';
+    mockCtx.scopes = new Set(['read', 'write']);
+
+    const getCall = vi.fn();
+    const patchCall = vi.fn();
+    const postCall = vi.fn();
+
+    // First get: DefinedValue for Mobile
+    getCall.mockResolvedValueOnce([
+      { Id: 1, Value: 'Mobile', Guid: '407E7E45-7B2E-4FCD-9605-ECB1339F2453' },
+    ]);
+    // Second get: Check for existing PhoneNumber - none found
+    getCall.mockResolvedValueOnce([]);
+
+    // Patch Person: successful
+    patchCall.mockResolvedValueOnce({ Id: 123, Email: 'new@example.com' });
+
+    // Post PhoneNumber: create new
+    postCall.mockResolvedValueOnce({ Id: 999, PersonId: 123, NumberTypeValueId: 1, Number: '+1234567890' });
+
+    mockClient.get = getCall;
+    mockClient.patch = patchCall;
+    mockClient.post = postCall;
+
+    const result = await rockPeopleTool.handle(
+      {
+        action: 'updateContactInfo',
+        personId: 123,
+        email: 'new@example.com',
+        phone: '+1234567890',
+        dryRun: false,
+        commit: true,
+        reason: 'test update',
+      },
+      null,
+      mockCtx
+    );
+
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.ok).toBe(true);
+    expect(response.result.committed).toBe(true);
+
+    // Verify Person was patched with Email but NOT MobilePhoneNumber
+    expect(patchCall.mock.calls.length).toBeGreaterThan(0);
+    const personPatchCall = patchCall.mock.calls.find((call: any) =>
+      call[1]?.includes('/api/') && call[1]?.includes('people')
+    );
+    expect(personPatchCall).toBeDefined();
+    expect(personPatchCall[2].Email).toBe('new@example.com');
+    expect(personPatchCall[2].MobilePhoneNumber).toBeUndefined();
+
+    // Verify PhoneNumber was created
+    expect(postCall.mock.calls.length).toBeGreaterThan(0);
+    const phoneNumberPostCall = postCall.mock.calls.find((call: any) =>
+      call[1]?.includes('phonenumbers') || call[1]?.includes('PhoneNumbers')
+    );
+    expect(phoneNumberPostCall).toBeDefined();
+    expect(phoneNumberPostCall[2].PersonId).toBe(123);
+    expect(phoneNumberPostCall[2].Number).toBe('+1234567890');
+  });
+
+  it('updateContactInfo: commit with existing mobile number should PATCH it', async () => {
+    mockCtx.mode = 'readwrite';
+    mockCtx.scopes = new Set(['read', 'write']);
+
+    const getCall = vi.fn();
+    const patchCall = vi.fn();
+
+    // First get: DefinedValue for Mobile
+    getCall.mockResolvedValueOnce([
+      { Id: 1, Value: 'Mobile', Guid: '407E7E45-7B2E-4FCD-9605-ECB1339F2453' },
+    ]);
+    // Second get: Find existing PhoneNumber (for authorization determination)
+    getCall.mockResolvedValueOnce([
+      { Id: 888, PersonId: 123, NumberTypeValueId: 1, Number: '+1111111111' },
+    ]);
+
+    // Patch PhoneNumber: update existing
+    patchCall.mockResolvedValueOnce({ Id: 888, PersonId: 123, NumberTypeValueId: 1, Number: '+9876543210' });
+
+    mockClient.get = getCall;
+    mockClient.patch = patchCall;
+
+    const result = await rockPeopleTool.handle(
+      {
+        action: 'updateContactInfo',
+        personId: 123,
+        phone: '+9876543210',
+        dryRun: false,
+        commit: true,
+        reason: 'test update',
+      },
+      null,
+      mockCtx
+    );
+
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.ok).toBe(true);
+    expect(response.result.committed).toBe(true);
+
+    // Verify PhoneNumber was patched (not created)
+    const patchCalls = patchCall.mock.calls.filter((call: any) =>
+      call[1]?.includes('phonenumbers') || call[1]?.includes('PhoneNumbers')
+    );
+    expect(patchCalls.length).toBeGreaterThan(0);
+    const phoneNumberPatch = patchCalls[0];
+    expect(phoneNumberPatch[2].Number).toBe('+9876543210');
+  });
+
+  it('updateContactInfo: authorization denied should not mutate', async () => {
+    mockCtx.mode = 'readonly'; // read-only mode
+    mockCtx.scopes = new Set(['read']);
+
+    const result = await rockPeopleTool.handle(
+      {
+        action: 'updateContactInfo',
+        personId: 123,
+        email: 'new@example.com',
+        dryRun: false,
+        commit: true,
+        reason: 'test update',
+      },
+      null,
+      mockCtx
+    );
+
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.ok).toBe(false);
+    expect(response.error?.code).toBe('UNAUTHORIZED');
+    expect(mockClient.patch).not.toHaveBeenCalled();
+    expect(mockClient.get).not.toHaveBeenCalled();
+  });
+
+  it('updateContactInfo: should patch email/firstName/lastName on Person without phone', async () => {
+    mockCtx.mode = 'readwrite';
+    mockCtx.scopes = new Set(['read', 'write']);
+
+    mockClient.patch.mockResolvedValue({ Id: 123, Email: 'new@example.com', FirstName: 'Jane' });
+
+    const result = await rockPeopleTool.handle(
+      {
+        action: 'updateContactInfo',
+        personId: 123,
+        email: 'new@example.com',
+        firstName: 'Jane',
+        dryRun: false,
+        commit: true,
+        reason: 'test update',
+      },
+      null,
+      mockCtx
+    );
+
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.ok).toBe(true);
+    expect(response.result.committed).toBe(true);
+
+    // Verify Person was patched
+    const patchCall = mockClient.patch.mock.calls[0];
+    expect(patchCall[2].Email).toBe('new@example.com');
+    expect(patchCall[2].FirstName).toBe('Jane');
+    expect(patchCall[2].MobilePhoneNumber).toBeUndefined();
+    // No phone-related gets should occur
+    expect(mockClient.get).not.toHaveBeenCalled();
+  });
+
+  it('updateContactInfo with phone: should deny phonenumbers write and not mutate when authorization fails', async () => {
+    mockCtx.mode = 'readwrite';
+    mockCtx.scopes = new Set(['read', 'write']);
+
+    // Mock the phonenumbers authorization to fail by removing it from the allowlist context
+    // We'll simulate this by using a custom mock context that denies phone writes
+    const restrictedCtx = {
+      ...mockCtx,
+      // Override with a context that denies phone writes by being readonly for that operation
+    } as unknown as OAuthRockContext;
+    restrictedCtx.mode = 'readwrite';
+    restrictedCtx.scopes = new Set(['read']); // Only read scope - no write
+
+    mockClient.get.mockResolvedValue([
+      { Id: 1, Value: 'Mobile', Guid: '407E7E45-7B2E-4FCD-9605-ECB1339F2453' },
+    ]);
+
+    const result = await rockPeopleTool.handle(
+      {
+        action: 'updateContactInfo',
+        personId: 123,
+        phone: '+1234567890',
+        dryRun: false,
+        commit: true,
+        reason: 'test update',
+      },
+      null,
+      restrictedCtx
+    );
+
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.ok).toBe(false);
+    expect(response.error.code).toBe('UNAUTHORIZED');
+
+    // Verify NO mutations occurred
+    expect(mockClient.patch).not.toHaveBeenCalled();
+    expect(mockClient.post).not.toHaveBeenCalled();
+  });
+
+  it('updateContactInfo: partial failure (Person succeeds, PhoneNumber fails) should return partial response', async () => {
+    mockCtx.mode = 'readwrite';
+    mockCtx.scopes = new Set(['read', 'write']);
+
+    const getCall = vi.fn();
+    const patchCall = vi.fn();
+    const postCall = vi.fn();
+
+    // First get: DefinedValue for Mobile (in resolveMobilePhoneTypeId)
+    getCall.mockResolvedValueOnce([
+      { Id: 1, Value: 'Mobile', Guid: '407E7E45-7B2E-4FCD-9605-ECB1339F2453' },
+    ]);
+    // Second get: Check for existing PhoneNumber - none found (so it will POST)
+    getCall.mockResolvedValueOnce([]);
+
+    // Patch Person: successful
+    patchCall.mockResolvedValueOnce({ Id: 123, Email: 'new@example.com' });
+
+    // Post PhoneNumber: both v2 and v1 attempts fail
+    postCall.mockRejectedValueOnce(new Error('PhoneNumber creation failed - v2 API error'));
+    postCall.mockRejectedValueOnce(new Error('PhoneNumber creation failed - v1 API error'));
+
+    mockClient.get = getCall;
+    mockClient.patch = patchCall;
+    mockClient.post = postCall;
+
+    const result = await rockPeopleTool.handle(
+      {
+        action: 'updateContactInfo',
+        personId: 123,
+        email: 'new@example.com',
+        phone: '+1234567890',
+        dryRun: false,
+        commit: true,
+        reason: 'test partial failure',
+      },
+      null,
+      mockCtx
+    );
+
+    const response = JSON.parse(result.content[0].text!);
+
+    // Assert partial failure response shape
+    expect(response.ok).toBe(true);
+    expect(response.result.partial).toBe(true);
+    expect(response.result.committed).toBe(false);
+
+    // Assert person mutation succeeded and is in results
+    expect(response.result.results).toBeDefined();
+    expect(response.result.results.person).toBeDefined();
+    expect(response.result.results.person.Email).toBe('new@example.com');
+
+    // Assert phone error is surfaced in errors
+    expect(response.result.errors).toBeDefined();
+    expect(response.result.errors.phone).toBeDefined();
+    expect(response.result.errors.phone).toContain('PhoneNumber creation failed');
+  });
 });
