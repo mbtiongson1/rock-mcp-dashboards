@@ -101,7 +101,7 @@ export class DiscoveryService {
 
   private async runDiscovery(ctx: OAuthRockContext): Promise<FavorDiscoveryMap> {
     const generatedAt = new Date().toISOString();
-    const rockBaseUrl = process.env.ROCK_BASE_URL || process.env.ROCK_PUBLIC_URL || 'local';
+    const rockBaseUrl = process.env.ROCK_PUBLIC_URL || process.env.ROCK_API_URL || process.env.ROCK_BASE_URL || 'local';
     const rockBaseUrlHash = crypto.createHash('sha256').update(rockBaseUrl).digest('hex');
     
     let rockVersion = '17.7';

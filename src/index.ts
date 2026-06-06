@@ -6,6 +6,8 @@ import { registerReportViewerApp } from './mcp/apps.js';
 import { RockClientImpl } from './rock/client.js';
 import { DiscoveryService } from './discovery/discovery-service.js';
 import { OAuthRockContext } from './http/oauth.js';
+import { InMemoryDatasetStore } from './tools/dataset-store.js';
+import { getRockGuideText } from './mcp/guide-text.js';
 
 // Load environment variables
 try {
@@ -25,6 +27,7 @@ if (isStdio) {
   });
 
   const discoveryService = new DiscoveryService(rockClient);
+  const datasetStore = new InMemoryDatasetStore();
 
   // Mock dev context with admin rights for local inspect/debugging
   const devCtx: OAuthRockContext = {
@@ -48,11 +51,17 @@ if (isStdio) {
 
   (devCtx as any).rockClient = rockClient;
   (devCtx as any).discoveryService = discoveryService;
+  (devCtx as any).datasetStore = datasetStore;
 
-  const server = new McpServer({
-    name: 'rock-mcp',
-    version: '1.0.0',
-  });
+  const server = new McpServer(
+    {
+      name: 'rock-mcp',
+      version: '1.0.0',
+    },
+    {
+      instructions: getRockGuideText('readwrite'),
+    }
+  );
 
   // Register all tools in readwrite mode for developer accessibility
   for (const tool of allTools) {
@@ -81,8 +90,8 @@ if (isStdio) {
   });
 } else {
   const app = createApp();
-  const port = process.env.PORT || 3000;
-  
+  const port = process.env.PORT || 8787;
+
   app.listen(port, () => {
     console.log(`Rock MCP Server listening over HTTP on port ${port}`);
     console.log(`Endpoints:`);

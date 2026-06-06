@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import { createAuthMiddleware } from './oauth.js';
-import { resolveMode } from '../mcp/modes.js';
+import { resolveMode, ScopeError } from '../mcp/modes.js';
 import { RockClientImpl } from '../rock/client.js';
 import { RockUserResolver } from '../auth/rock-user-resolver.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -9,6 +9,8 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { allTools } from '../tools/index.js';
 import { registerReportViewerApp } from '../mcp/apps.js';
 import { DiscoveryService } from '../discovery/discovery-service.js';
+import { InMemoryDatasetStore } from '../tools/dataset-store.js';
+import { getRockGuideText } from '../mcp/guide-text.js';
 
 export function createApp() {
   const app = express();
@@ -23,6 +25,7 @@ export function createApp() {
 
   const discoveryService = new DiscoveryService(rockClient);
   const rockUserResolver = new RockUserResolver(rockClient);
+  const datasetStore = new InMemoryDatasetStore();
 
   const authMiddleware = createAuthMiddleware();
 
@@ -37,6 +40,7 @@ export function createApp() {
       ctx.endpoint = endpointKind;
       (ctx as any).rockClient = rockClient;
       (ctx as any).discoveryService = discoveryService;
+      (ctx as any).datasetStore = datasetStore;
 
       try {
         // Resolve Rock person
@@ -51,10 +55,15 @@ export function createApp() {
         ctx.mode = mode;
 
         // Create McpServer for this request/session
-        const server = new McpServer({
-          name: 'rock-mcp',
-          version: '1.0.0',
-        });
+        const server = new McpServer(
+          {
+            name: 'rock-mcp',
+            version: '1.0.0',
+          },
+          {
+            instructions: getRockGuideText(mode),
+          }
+        );
 
         // Register tools dynamically based on Resolved Mode & Scopes
         for (const tool of allTools) {
@@ -89,7 +98,11 @@ export function createApp() {
         await server.connect(transport);
         await transport.handleRequest(req, res, req.body);
       } catch (err: any) {
-        res.status(500).json({ error: err.message || 'Internal server error' });
+        if (err instanceof ScopeError) {
+          res.status(403).json({ error: err.message });
+        } else {
+          res.status(500).json({ error: err.message || 'Internal server error' });
+        }
       }
     };
   };

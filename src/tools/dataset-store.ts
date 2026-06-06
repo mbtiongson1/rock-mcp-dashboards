@@ -1,3 +1,4 @@
+import * as crypto from 'crypto';
 import { OAuthRockContext } from '../http/oauth.js';
 
 export interface StoredDataset {
@@ -58,5 +59,3 @@ export class InMemoryDatasetStore {
     this.datasets.delete(datasetId);
   }
 }
-
-import * as crypto from 'crypto';

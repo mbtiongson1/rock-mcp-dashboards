@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 // @ts-ignore
-import { resolveMode, EndpointKind } from './modes.js';
+import { resolveMode, EndpointKind, ScopeError } from './modes.js';
 // @ts-ignore
 import { OAuthRockContext } from '../http/oauth.js';
 
@@ -50,5 +50,15 @@ describe('Endpoint Mode Resolution', () => {
     const ctx = baseContext(['read', 'write'], true);
     const mode = resolveMode('mcp', ctx as OAuthRockContext);
     expect(mode).toBe('readwrite');
+  });
+
+  it('should throw ScopeError (not generic Error) for missing write scope on readwrite endpoint', () => {
+    const ctx = baseContext(['read']);
+    expect(() => resolveMode('readwrite', ctx as OAuthRockContext)).toThrow(ScopeError);
+  });
+
+  it('should throw ScopeError with correct message', () => {
+    const ctx = baseContext(['read']);
+    expect(() => resolveMode('readwrite', ctx as OAuthRockContext)).toThrow('Missing scope: write');
   });
 });
