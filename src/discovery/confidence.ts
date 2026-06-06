@@ -170,7 +170,7 @@ export function scoreAgeGroupAttribute(attr: RockAttribute): { confidence: numbe
   }
 
   // Check if applies to Person or Group
-  const entityType = attr.EntityType?.Name || ''.toLowerCase();
+  const entityType = (attr.EntityType?.Name || '').toLowerCase();
   if (entityType === 'person' || attr.EntityTypeId === 1) {
     confidence += 0.10;
     signals.push('applies to Person');

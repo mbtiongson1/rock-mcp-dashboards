@@ -168,6 +168,20 @@ describe('Attribute Confidence Scorers', () => {
       expect(result.signals.join(' ').toLowerCase()).toContain('inferred');
     });
 
+    it('should correctly recognize capitalized EntityType.Name (Person)', () => {
+      const attr: RockAttribute = {
+        Name: 'Age Group',
+        Key: 'age_group',
+        IsActive: true,
+        EntityType: { Name: 'Person' }, // Capitalized
+        AttributeValues: [{ Value: 'Kids' }, { Value: 'Adults' }],
+      };
+
+      const result = scoreAgeGroupAttribute(attr);
+      expect(result.confidence).toBeGreaterThan(0.80);
+      expect(result.signals).toContain('applies to Person');
+    });
+
     it('should score zero for null attribute', () => {
       const result = scoreAgeGroupAttribute(null as any);
       expect(result.confidence).toBe(0);
