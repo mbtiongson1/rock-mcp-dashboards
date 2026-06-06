@@ -72,12 +72,11 @@ const auditLogger = new AuditLogger();
 async function resolvePersonId(client: RockClient, ctx: OAuthRockContext, person: { id?: number; guid?: string; search?: string }): Promise<number | null> {
   if (person.id) return person.id;
   if (person.guid) {
+    const validGuid = assertValidGuid(person.guid);
     let results: any[] = [];
     try {
-      const validGuid = assertValidGuid(person.guid);
       results = await client.post(ctx, '/api/v2/models/people/search', { Where: `Guid == ${quoteLinqString(validGuid)}` });
     } catch {
-      const validGuid = assertValidGuid(person.guid);
       results = await client.get(ctx, `/api/People?$filter=Guid eq guid${quoteODataString(validGuid)}`);
     }
     if (results && results.length > 0) return results[0].Id;
@@ -189,14 +188,13 @@ export const rockPeopleTool: GatewayTool = {
             match = await rockClient.get(ctx, `/api/People/${person.id}`);
           }
         } else if (person.guid) {
+          const validGuid = assertValidGuid(person.guid);
           let results: any[] = [];
           try {
-            const validGuid = assertValidGuid(person.guid);
             results = await rockClient.post(ctx, '/api/v2/models/people/search', {
               Where: `Guid == ${quoteLinqString(validGuid)}`,
             });
           } catch (_err) {
-            const validGuid = assertValidGuid(person.guid);
             results = await rockClient.get(ctx, `/api/People?$filter=Guid eq guid${quoteODataString(validGuid)}`);
           }
           if (results && results.length > 0) {

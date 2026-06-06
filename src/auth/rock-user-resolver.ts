@@ -51,8 +51,8 @@ export class RockUserResolver {
 
     // 1. Resolve by explicit Guid claim if present
     if (oauth.rockPersonGuid) {
+      const validGuid = assertValidGuid(oauth.rockPersonGuid);
       try {
-        const validGuid = assertValidGuid(oauth.rockPersonGuid);
         const results = await this.rockClient.post<any[]>(ctx, '/api/v2/models/people/search', {
           Where: `Guid == ${quoteLinqString(validGuid)}`,
         });
@@ -61,7 +61,6 @@ export class RockUserResolver {
         }
       } catch {
         try {
-          const validGuid = assertValidGuid(oauth.rockPersonGuid);
           const results = await this.rockClient.get<any[]>(ctx, `/api/People?$filter=Guid eq guid${quoteODataString(validGuid)}`);
           if (results && results.length > 0) {
             person = results[0];

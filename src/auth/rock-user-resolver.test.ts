@@ -27,12 +27,12 @@ describe('RockUserResolver', () => {
       subject: 'user-123',
       email: 'alex@example.com',
       accessTokenHash: 'hash',
-      rockPersonGuid: 'guid-abc-123', // claim containing person guid
+      rockPersonGuid: '550e8400-e29b-41d4-a716-446655440000', // claim containing person guid
     };
 
     mockClient.post = vi.fn().mockImplementation(async (_ctx, path, _body: any) => {
       if (path.includes('/people/search')) {
-        return [{ Id: 12, PrimaryAliasId: 24, Guid: 'guid-abc-123', NickName: 'Alex' }];
+        return [{ Id: 12, PrimaryAliasId: 24, Guid: '550e8400-e29b-41d4-a716-446655440000', NickName: 'Alex' }];
       }
       return [];
     });
@@ -40,7 +40,7 @@ describe('RockUserResolver', () => {
     const result = await resolver.resolve(mockCtx, oauth);
 
     expect(result.personId).toBe(12);
-    expect(result.personGuid).toBe('guid-abc-123');
+    expect(result.personGuid).toBe('550e8400-e29b-41d4-a716-446655440000');
     expect(result.personAliasId).toBe(24);
   });
 
@@ -73,7 +73,7 @@ describe('RockUserResolver', () => {
 
     mockClient.post = vi.fn().mockImplementation(async (_ctx, path, _body: any) => {
       if (path.includes('/people/search')) {
-        return [{ Id: 1, PrimaryAliasId: 10, Guid: 'admin-guid' }];
+        return [{ Id: 1, PrimaryAliasId: 10, Guid: '550e8400-e29b-41d4-a716-446655440001' }];
       }
       if (path.includes('/groups/search')) {
         // Group search for role "RSR - Rock Administration"
