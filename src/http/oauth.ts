@@ -124,18 +124,33 @@ export async function fetchAuth0OAuthMetadata(
   }
 
   const metadata = await response.json() as Record<string, unknown>;
+  const issuer = stringClaim(metadata.issuer);
+  if (!issuer) {
+    throw new Error('Auth0 discovery metadata is missing issuer');
+  }
+  if (normalizeIssuer(issuer) !== config.issuer) {
+    throw new Error(`Auth0 discovery metadata issuer mismatch: expected ${config.issuer}, got ${issuer}`);
+  }
+
+  const authorizationEndpoint = requireHttpUrl(metadata.authorization_endpoint, 'authorization_endpoint');
+  const tokenEndpoint = requireHttpUrl(metadata.token_endpoint, 'token_endpoint');
   const registrationEndpoint = stringClaim(metadata.registration_endpoint);
   if (!registrationEndpoint) {
     throw new Error('Auth0 Dynamic Client Registration endpoint is missing; enable DCR on the Auth0 tenant');
   }
+  requireHttpUrl(registrationEndpoint, 'registration_endpoint');
 
   const jwksUri = stringClaim(metadata.jwks_uri);
   if (!jwksUri) {
     throw new Error('Auth0 discovery metadata is missing jwks_uri');
   }
+  requireHttpUrl(jwksUri, 'jwks_uri');
 
   return {
     ...metadata,
+    issuer,
+    authorization_endpoint: authorizationEndpoint,
+    token_endpoint: tokenEndpoint,
     registration_endpoint: registrationEndpoint,
     jwks_uri: jwksUri,
   } as Auth0OAuthMetadata;
@@ -349,6 +364,22 @@ function parseUrl(value: string, envName: string): URL {
   } catch (_err) {
     throw new Error(`${envName} must be a valid absolute URL`);
   }
+}
+
+function requireHttpUrl(value: unknown, fieldName: string): string {
+  const stringValue = typeof value === 'string' ? value : '';
+  let url: URL;
+  try {
+    url = new URL(stringValue);
+  } catch (_err) {
+    throw new Error(`Auth0 discovery metadata ${fieldName} must be a valid absolute http(s) URL`);
+  }
+
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error(`Auth0 discovery metadata ${fieldName} must be a valid absolute http(s) URL`);
+  }
+
+  return stringValue;
 }
 
 function stringClaim(value: unknown): string | undefined {

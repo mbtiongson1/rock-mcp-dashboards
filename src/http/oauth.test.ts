@@ -92,6 +92,46 @@ describe('Auth0 OAuth metadata discovery', () => {
 
     await expect(fetchAuth0OAuthMetadata({ config, fetchFn })).rejects.toThrow(/Dynamic Client Registration/);
   });
+
+  it('rejects discovery metadata when the issuer does not match config', async () => {
+    const config = loadAuth0Config({
+      AUTH0_DOMAIN: 'favor.us.auth0.com',
+      AUTH0_AUDIENCE: 'api',
+      MCP_PUBLIC_URL: 'https://mcp.example.com/mcp',
+    });
+    const fetchFn = vi.fn(async () => new Response(JSON.stringify({
+      issuer: 'https://different.us.auth0.com/',
+      authorization_endpoint: 'https://favor.us.auth0.com/authorize',
+      token_endpoint: 'https://favor.us.auth0.com/oauth/token',
+      jwks_uri: 'https://favor.us.auth0.com/.well-known/jwks.json',
+      registration_endpoint: 'https://favor.us.auth0.com/oidc/register',
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+
+    await expect(fetchAuth0OAuthMetadata({ config, fetchFn })).rejects.toThrow(/issuer/i);
+  });
+
+  it('rejects discovery metadata when a required endpoint is not a valid http url', async () => {
+    const config = loadAuth0Config({
+      AUTH0_DOMAIN: 'favor.us.auth0.com',
+      AUTH0_AUDIENCE: 'api',
+      MCP_PUBLIC_URL: 'https://mcp.example.com/mcp',
+    });
+    const fetchFn = vi.fn(async () => new Response(JSON.stringify({
+      issuer: 'https://favor.us.auth0.com/',
+      authorization_endpoint: '/authorize',
+      token_endpoint: 'https://favor.us.auth0.com/oauth/token',
+      jwks_uri: 'https://favor.us.auth0.com/.well-known/jwks.json',
+      registration_endpoint: 'https://favor.us.auth0.com/oidc/register',
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+
+    await expect(fetchAuth0OAuthMetadata({ config, fetchFn })).rejects.toThrow(/authorization_endpoint/i);
+  });
 });
 
 describe('Auth0OAuthTokenVerifier', () => {
