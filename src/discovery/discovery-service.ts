@@ -5,6 +5,10 @@ import {
   DiscoveryCandidate,
   scoreConnectGroupType,
   scoreMinistryTeamType,
+  scoreLifecycleAttribute,
+  scoreAgeGroupAttribute,
+  scoreFluroIdAttribute,
+  RockAttribute,
 } from './confidence.js';
 
 export interface FavorDiscoveryMap {
@@ -196,12 +200,205 @@ export class DiscoveryService {
       warnings.push(`failed to parse group types: ${err.message}`);
     }
 
-    // Default placeholders for attributes/reports/savedsearches (discoverable properties in v1.7.7)
+    // Discover Attributes
+    const personLifecycleAttrs: DiscoveryCandidate[] = [];
+    const personAgeGroupAttrs: DiscoveryCandidate[] = [];
+    const groupAgeGroupAttrs: DiscoveryCandidate[] = [];
+    const fluroIdAttrs: DiscoveryCandidate[] = [];
+
+    let attributes: RockAttribute[] = [];
+    try {
+      attributes = await this.rockClient.post<RockAttribute[]>(ctx, '/api/v2/models/attributes/search', {});
+    } catch (_err) {
+      // Fall back to REST v1
+      try {
+        attributes = await this.rockClient.get<RockAttribute[]>(ctx, '/api/Attributes');
+      } catch (err: any) {
+        warnings.push(`failed to discover attributes: ${err.message}`);
+      }
+    }
+
+    try {
+      for (const attr of attributes) {
+        const lifecycleScore = scoreLifecycleAttribute(attr);
+        const ageGroupScore = scoreAgeGroupAttribute(attr);
+        const fluroScore = scoreFluroIdAttribute(attr);
+
+        // Build candidate if any scorer has confidence >= threshold
+        if (lifecycleScore.confidence >= 0.4) {
+          const entityType = attr.EntityType?.Name || '';
+          const isPerson = entityType.toLowerCase() === 'person' || attr.EntityTypeId === 1;
+          if (isPerson) {
+            personLifecycleAttrs.push({
+              kind: 'attribute.person',
+              id: attr.Id,
+              guid: attr.Guid,
+              name: attr.Name || '',
+              confidence: lifecycleScore.confidence,
+              signals: lifecycleScore.signals,
+            });
+          }
+        }
+
+        if (ageGroupScore.confidence >= 0.4) {
+          const entityType = attr.EntityType?.Name || '';
+          const entityTypeId = attr.EntityTypeId || 0;
+          const isPerson = entityType.toLowerCase() === 'person' || entityTypeId === 1;
+          const isGroup = entityType.toLowerCase() === 'group' || entityTypeId === 2;
+
+          if (isPerson || (entityTypeId === 0 && !entityType)) {
+            personAgeGroupAttrs.push({
+              kind: 'attribute.person',
+              id: attr.Id,
+              guid: attr.Guid,
+              name: attr.Name || '',
+              confidence: ageGroupScore.confidence,
+              signals: ageGroupScore.signals,
+            });
+          }
+          if (isGroup || (entityTypeId === 0 && !entityType)) {
+            groupAgeGroupAttrs.push({
+              kind: 'attribute.group',
+              id: attr.Id,
+              guid: attr.Guid,
+              name: attr.Name || '',
+              confidence: ageGroupScore.confidence,
+              signals: ageGroupScore.signals,
+            });
+          }
+        }
+
+        if (fluroScore.confidence >= 0.4) {
+          fluroIdAttrs.push({
+            kind: 'attribute.external',
+            id: attr.Id,
+            guid: attr.Guid,
+            name: attr.Name || '',
+            confidence: fluroScore.confidence,
+            signals: fluroScore.signals,
+          });
+        }
+      }
+    } catch (err: any) {
+      warnings.push(`failed to parse attributes: ${err.message}`);
+    }
+
+    // Discover Reports
+    let reports: DiscoveryCandidate[] = [];
+    try {
+      const reportList = await this.rockClient.get<any[]>(ctx, '/api/Reports');
+      reports = reportList.map(r => ({
+        kind: 'report',
+        id: r.Id,
+        guid: r.Guid,
+        name: r.Name || '',
+        confidence: 0.9,
+        signals: ['discovered report'],
+      }));
+    } catch (err: any) {
+      warnings.push(`failed to discover reports: ${err.message}`);
+    }
+
+    // Discover Entity Searches
+    let entitySearches: DiscoveryCandidate[] = [];
+    try {
+      const searchList = await this.rockClient.post<any[]>(ctx, '/api/v2/models/entitysearches/search', {});
+      entitySearches = searchList.map(s => ({
+        kind: 'entitySearch',
+        id: s.Id,
+        guid: s.Guid,
+        idKey: s.Key,
+        name: s.Name || s.Key || '',
+        confidence: 0.9,
+        signals: ['discovered entity search'],
+      }));
+    } catch (_err) {
+      // Fall back to REST v1
+      try {
+        const searchList = await this.rockClient.get<any[]>(ctx, '/api/EntitySearches');
+        entitySearches = searchList.map(s => ({
+          kind: 'entitySearch',
+          id: s.Id,
+          guid: s.Guid,
+          idKey: s.Key,
+          name: s.Name || s.Key || '',
+          confidence: 0.9,
+          signals: ['discovered entity search via REST v1 fallback'],
+        }));
+      } catch (err: any) {
+        warnings.push(`failed to discover entity searches: ${err.message}`);
+      }
+    }
+
+    // Discover Workflow Types
+    let workflows: DiscoveryCandidate[] = [];
+    try {
+      const workflowList = await this.rockClient.post<any[]>(ctx, '/api/v2/models/workflowtypes/search', {});
+      workflows = workflowList.map(w => ({
+        kind: 'workflowType',
+        id: w.Id,
+        guid: w.Guid,
+        name: w.Name || '',
+        confidence: 0.9,
+        signals: ['discovered workflow type'],
+      }));
+    } catch (_err) {
+      // Fall back to REST v1
+      try {
+        const workflowList = await this.rockClient.get<any[]>(ctx, '/api/WorkflowTypes');
+        workflows = workflowList.map(w => ({
+          kind: 'workflowType',
+          id: w.Id,
+          guid: w.Guid,
+          name: w.Name || '',
+          confidence: 0.9,
+          signals: ['discovered workflow type via REST v1 fallback'],
+        }));
+      } catch (err: any) {
+        warnings.push(`failed to discover workflow types: ${err.message}`);
+      }
+    }
+
+    // Discover Connection Types
+    let connectionTypes: DiscoveryCandidate[] = [];
+    try {
+      const connList = await this.rockClient.post<any[]>(ctx, '/api/v2/models/connectiontypes/search', {});
+      connectionTypes = connList.map(c => ({
+        kind: 'connectionType',
+        id: c.Id,
+        guid: c.Guid,
+        name: c.Name || '',
+        confidence: 0.9,
+        signals: ['discovered connection type'],
+      }));
+    } catch (_err) {
+      // Fall back to REST v1
+      try {
+        const connList = await this.rockClient.get<any[]>(ctx, '/api/ConnectionTypes');
+        connectionTypes = connList.map(c => ({
+          kind: 'connectionType',
+          id: c.Id,
+          guid: c.Guid,
+          name: c.Name || '',
+          confidence: 0.9,
+          signals: ['discovered connection type via REST v1 fallback'],
+        }));
+      } catch (err: any) {
+        warnings.push(`failed to discover connection types: ${err.message}`);
+      }
+    }
+
+    // Determine overall confidence: high if core discoveries succeeded, lower if warnings
+    let overallConfidence = 1.0;
+    if (warnings.length > 0) {
+      overallConfidence = Math.max(0.5, 1.0 - warnings.length * 0.1);
+    }
+
     return {
       generatedAt,
       rockBaseUrlHash,
       rockVersion,
-      confidence: 1.0,
+      confidence: overallConfidence,
       campuses,
       groupTypes: {
         connectGroups: connectGroups.sort((a, b) => b.confidence - a.confidence),
@@ -209,19 +406,15 @@ export class DiscoveryService {
         other: otherGroupTypes,
       },
       attributes: {
-        personLifecycle: [
-          { kind: 'attribute.person', name: 'Connection Status', confidence: 0.95, signals: ['standard Rock field'] }
-        ],
-        personAgeGroup: [
-          { kind: 'attribute.person', name: 'Age Group', confidence: 0.85, signals: ['inferred age group'] }
-        ],
-        groupAgeGroup: [],
-        fluroId: [],
+        personLifecycle: personLifecycleAttrs.sort((a, b) => b.confidence - a.confidence),
+        personAgeGroup: personAgeGroupAttrs.sort((a, b) => b.confidence - a.confidence),
+        groupAgeGroup: groupAgeGroupAttrs.sort((a, b) => b.confidence - a.confidence),
+        fluroId: fluroIdAttrs.sort((a, b) => b.confidence - a.confidence),
       },
-      reports: [],
-      entitySearches: [],
-      workflows: [],
-      connectionTypes: [],
+      reports,
+      entitySearches,
+      workflows,
+      connectionTypes,
       warnings,
     };
   }
