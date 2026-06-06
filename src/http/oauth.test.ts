@@ -45,6 +45,28 @@ describe('OAuth Middleware', () => {
     expect(next).not.toHaveBeenCalled();
   });
 
+  it('should return 401 when subject is missing even if token and scope are valid', async () => {
+    const middleware = createAuthMiddleware({
+      verifyToken: async () => ({
+        isValid: true,
+        payload: { scope: 'read write', email: 'test@example.com' }
+      }),
+    });
+
+    const req = { headers: { authorization: 'Bearer token' } } as unknown as Request;
+    const res = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn(),
+    } as unknown as Response;
+    const next = vi.fn();
+
+    await middleware(req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: 'Invalid token subject' }));
+    expect(next).not.toHaveBeenCalled();
+  });
+
   it('should succeed and attach oauthContext when token and read scope are valid', async () => {
     const middleware = createAuthMiddleware({
       verifyToken: async () => ({
