@@ -212,10 +212,12 @@ export const rockEntityTool: GatewayTool = {
         }
 
         return formatResponse(parsed.action, ctx, result);
-      } catch (err: any) {
+      } catch (err) {
+        // Saved Entity Searches require REST v2 access (no v1 equivalent)
+        const errorMessage = err instanceof Error ? err.message : String(err);
         return formatResponse(parsed.action, ctx, null, {
           code: 'SEARCH_BY_KEY_ERROR',
-          message: `Saved Entity Search failed: ${err.message}`,
+          message: `Saved Entity Search failed (requires REST v2 access): ${errorMessage}`,
         });
       }
     }
@@ -233,10 +235,12 @@ export const rockEntityTool: GatewayTool = {
           });
           const count = Array.isArray(result) ? result.length : 1;
           return formatResponse(parsed.action, ctx, { count });
-        } catch (err: any) {
+        } catch (err) {
+          // Saved Entity Searches require REST v2 access (no v1 equivalent)
+          const errorMessage = err instanceof Error ? err.message : String(err);
           return formatResponse(parsed.action, ctx, null, {
             code: 'COUNT_ERROR',
-            message: `Count with searchKey failed: ${err.message}`,
+            message: `Count with searchKey failed (requires REST v2 access): ${errorMessage}`,
           });
         }
       }
@@ -281,11 +285,19 @@ export const rockEntityTool: GatewayTool = {
       try {
         const result = await rockClient.get(ctx, `/api/v2/models/${model}/${id}/attributevalues`);
         return formatResponse(parsed.action, ctx, result);
-      } catch (err: any) {
-        return formatResponse(parsed.action, ctx, null, {
-          code: 'ATTRIBUTE_VALUES_ERROR',
-          message: `Failed to fetch attribute values: ${err.message}`,
-        });
+      } catch {
+        // Fall back to REST v1 attribute values endpoint
+        try {
+          const v1Path = getRestV1Path(model);
+          const result = await rockClient.get(ctx, `/api/${v1Path}/${id}/AttributeValues`);
+          return formatResponse(parsed.action, ctx, result, undefined, 'Fell back to REST v1');
+        } catch (v1Err) {
+          const errorMessage = v1Err instanceof Error ? v1Err.message : String(v1Err);
+          return formatResponse(parsed.action, ctx, null, {
+            code: 'ATTRIBUTE_VALUES_ERROR',
+            message: `Failed to fetch attribute values on v2 and v1: ${errorMessage}`,
+          });
+        }
       }
     }
 

@@ -817,18 +817,41 @@ export const rockPeopleTool: GatewayTool = {
           });
         }
 
-        const result = await rockClient.patch(ctx, `/api/v2/models/people/${id}/attributevalues`, attributes);
-        auditLogger.log(ctx, {
-          tool: 'rock_people',
-          action: parsed.action,
-          target: { model: 'people', id },
-          dryRun: false,
-          commit: true,
-          reason,
-          outcome: 'success',
-        });
-        return formatResponse(parsed.action, ctx, { committed: true, result });
-      } catch (err: any) {
+        // Attempt to patch attributes via v2.
+        // NOTE: Rock REST v1 has no clean equivalent for patching person attributes.
+        // Unlike entity read operations (which gracefully fall back to v1), attribute writes
+        // require v2 access. If v2 fails, we return a clear, actionable error rather than
+        // attempting an uncertain v1 path.
+        try {
+          const result = await rockClient.patch(ctx, `/api/v2/models/people/${id}/attributevalues`, attributes);
+          auditLogger.log(ctx, {
+            tool: 'rock_people',
+            action: parsed.action,
+            target: { model: 'people', id },
+            dryRun: false,
+            commit: true,
+            reason,
+            outcome: 'success',
+          });
+          return formatResponse(parsed.action, ctx, { committed: true, result });
+        } catch (err) {
+          auditLogger.log(ctx, {
+            tool: 'rock_people',
+            action: parsed.action,
+            target: { model: 'people' },
+            dryRun: false,
+            commit: true,
+            reason,
+            outcome: 'error',
+            errorCode: 'PATCH_ATTRIBUTES_ERROR',
+          });
+          const errorMessage = err instanceof Error ? err.message : String(err);
+          return formatResponse(parsed.action, ctx, null, {
+            code: 'PATCH_ATTRIBUTES_ERROR',
+            message: `Attribute write failed (requires REST v2 access; grant the API key v2 access): ${errorMessage}`,
+          });
+        }
+      } catch (err) {
         auditLogger.log(ctx, {
           tool: 'rock_people',
           action: parsed.action,
@@ -839,9 +862,10 @@ export const rockPeopleTool: GatewayTool = {
           outcome: 'error',
           errorCode: 'PATCH_ATTRIBUTES_ERROR',
         });
+        const errorMessage = err instanceof Error ? err.message : String(err);
         return formatResponse(parsed.action, ctx, null, {
           code: 'PATCH_ATTRIBUTES_ERROR',
-          message: err.message,
+          message: `Attribute write failed: ${errorMessage}`,
         });
       }
     }

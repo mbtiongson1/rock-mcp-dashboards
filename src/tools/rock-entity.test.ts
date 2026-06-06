@@ -266,4 +266,107 @@ describe('rock_entity tool', () => {
     expect(response.error?.code).toBe('SEARCH_BY_KEY_ERROR');
     expect(response.error?.message).toContain('API error');
   });
+
+  // Tests for v2/v1 fallback behavior for attributeValues
+  it('should fetch attributeValues via v2 when v2 succeeds', async () => {
+    const mockAttrs = [
+      { AttributeId: 1, Value: 'value1' },
+      { AttributeId: 2, Value: 'value2' },
+    ];
+    mockClient.get.mockResolvedValue(mockAttrs);
+
+    const result = await rockEntityTool.handle(
+      { action: 'attributeValues', model: 'people', id: 123 },
+      null,
+      mockCtx
+    );
+
+    expect(mockClient.get).toHaveBeenCalledWith(mockCtx, '/api/v2/models/people/123/attributevalues');
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.ok).toBe(true);
+    expect(response.result).toEqual(mockAttrs);
+    expect(response.warning).toBeUndefined();
+  });
+
+  it('should fall back to v1 attributeValues endpoint when v2 fails', async () => {
+    const mockAttrs = [
+      { AttributeId: 1, Value: 'value1' },
+      { AttributeId: 2, Value: 'value2' },
+    ];
+
+    // v2 fails, v1 succeeds
+    mockClient.get
+      .mockRejectedValueOnce(new Error('v2 not authorized'))
+      .mockResolvedValueOnce(mockAttrs);
+
+    const result = await rockEntityTool.handle(
+      { action: 'attributeValues', model: 'people', id: 123 },
+      null,
+      mockCtx
+    );
+
+    // Should attempt v2 first
+    expect(mockClient.get).toHaveBeenNthCalledWith(1, mockCtx, '/api/v2/models/people/123/attributevalues');
+    // Then fall back to v1
+    expect(mockClient.get).toHaveBeenNthCalledWith(2, mockCtx, '/api/People/123/AttributeValues');
+
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.ok).toBe(true);
+    expect(response.result).toEqual(mockAttrs);
+    expect(response.warning).toContain('Fell back to REST v1');
+  });
+
+  it('should return clear error when both v2 and v1 attributeValues fail', async () => {
+    mockClient.get.mockRejectedValue(new Error('Not Found'));
+
+    const result = await rockEntityTool.handle(
+      { action: 'attributeValues', model: 'people', id: 123 },
+      null,
+      mockCtx
+    );
+
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.ok).toBe(false);
+    expect(response.error?.code).toBe('ATTRIBUTE_VALUES_ERROR');
+    expect(response.error?.message).toContain('v2 and v1');
+  });
+
+  // Tests for searchByKey v2 error handling
+  it('should return clear error for searchByKey v2 failure noting v2-only requirement', async () => {
+    mockClient.post.mockRejectedValue(new Error('401 Unauthorized'));
+
+    const result = await rockEntityTool.handle(
+      {
+        action: 'searchByKey',
+        searchKey: 'SavedEntitySearch',
+      },
+      null,
+      mockCtx
+    );
+
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.ok).toBe(false);
+    expect(response.error?.code).toBe('SEARCH_BY_KEY_ERROR');
+    expect(response.error?.message).toContain('v2');
+  });
+
+  // Tests for count with searchKey v2 error handling
+  it('should return clear error for count with searchKey when v2 fails', async () => {
+    mockClient.post.mockRejectedValue(new Error('401 Unauthorized'));
+
+    const result = await rockEntityTool.handle(
+      {
+        action: 'count',
+        model: 'people',
+        searchKey: 'SavedEntitySearch',
+      },
+      null,
+      mockCtx
+    );
+
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.ok).toBe(false);
+    expect(response.error?.code).toBe('COUNT_ERROR');
+    expect(response.error?.message).toContain('v2');
+  });
 });

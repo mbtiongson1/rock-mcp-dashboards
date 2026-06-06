@@ -13,6 +13,7 @@ describe('rock_people tool', () => {
     mockClient = {
       get: vi.fn(),
       post: vi.fn(),
+      patch: vi.fn(),
     };
 
     mockDiscoveryService = {
@@ -329,5 +330,80 @@ describe('rock_people tool', () => {
 
     // Verify ConnectionStatusId was NOT hardcoded in payload
     expect(postCall[2].ConnectionStatusId).toBeUndefined();
+  });
+
+  // Tests for patchAttributes v2/v1 fallback
+  it('patchAttributes: should require write authorization', async () => {
+    // Readonly mode - should deny
+    const result = await rockPeopleTool.handle(
+      {
+        action: 'patchAttributes',
+        personId: 123,
+        attributes: { customAttr: 'value' },
+        dryRun: true,
+        commit: false,
+        reason: 'test',
+      },
+      null,
+      mockCtx
+    );
+
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.ok).toBe(false);
+    expect(response.error?.code).toBe('UNAUTHORIZED');
+  });
+
+  it('patchAttributes: should succeed on v2 without attempting v1 fallback', async () => {
+    mockCtx.mode = 'readwrite';
+    mockCtx.scopes = new Set(['read', 'write']);
+
+    mockClient.patch.mockResolvedValue({ success: true });
+
+    const result = await rockPeopleTool.handle(
+      {
+        action: 'patchAttributes',
+        personId: 123,
+        attributes: { customAttr: 'newValue' },
+        dryRun: false,
+        commit: true,
+        reason: 'test update',
+      },
+      null,
+      mockCtx
+    );
+
+    expect(mockClient.patch).toHaveBeenCalledWith(
+      mockCtx,
+      '/api/v2/models/people/123/attributevalues',
+      { customAttr: 'newValue' }
+    );
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.ok).toBe(true);
+    expect(response.result.committed).toBe(true);
+  });
+
+  it('patchAttributes: should return clear error when v2 fails, noting v2 requirement', async () => {
+    mockCtx.mode = 'readwrite';
+    mockCtx.scopes = new Set(['read', 'write']);
+
+    mockClient.patch.mockRejectedValue(new Error('401 Unauthorized - v2 access required'));
+
+    const result = await rockPeopleTool.handle(
+      {
+        action: 'patchAttributes',
+        personId: 123,
+        attributes: { customAttr: 'newValue' },
+        dryRun: false,
+        commit: true,
+        reason: 'test update',
+      },
+      null,
+      mockCtx
+    );
+
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.ok).toBe(false);
+    expect(response.error?.code).toBe('PATCH_ATTRIBUTES_ERROR');
+    expect(response.error?.message).toContain('v2');
   });
 });
