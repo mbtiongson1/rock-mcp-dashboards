@@ -172,6 +172,105 @@ async function resolvePersonAliasId(client: RockClient, ctx: OAuthRockContext, p
 }
 
 /**
+ * Resolve the DefinedValue ID for Mobile phone type.
+ * Mobile phone types are DefinedValues under the "Phone Type" DefinedType
+ * with the well-known GUID 407E7E45-7B2E-4FCD-9605-ECB1339F2453.
+ */
+async function resolveMobilePhoneTypeId(client: RockClient, ctx: OAuthRockContext): Promise<number | null> {
+  try {
+    // Try v1 OData first: filter by DefinedType.Value == 'Phone Type' and Value == 'Mobile'
+    const mobilePhoneTypes = await client.get<any[]>(
+      ctx,
+      `/api/DefinedValues?$filter=DefinedType/Value eq 'Phone Type' and Value eq 'Mobile'&$top=1`
+    );
+    if (mobilePhoneTypes && mobilePhoneTypes.length > 0) {
+      return mobilePhoneTypes[0].Id;
+    }
+  } catch {
+    // Fallback: try by GUID
+    try {
+      const byGuid = await client.get<any[]>(
+        ctx,
+        `/api/DefinedValues?$filter=Guid eq guid'407E7E45-7B2E-4FCD-9605-ECB1339F2453'&$top=1`
+      );
+      if (byGuid && byGuid.length > 0) {
+        return byGuid[0].Id;
+      }
+    } catch {
+      // Silent fallback
+    }
+  }
+  return null;
+}
+
+/**
+ * Find or update a Mobile PhoneNumber for a person.
+ * Returns the updated/created PhoneNumber object.
+ * If existingPhoneId is provided, skips the lookup and uses it directly.
+ */
+async function upsertMobilePhoneNumber(
+  client: RockClient,
+  ctx: OAuthRockContext,
+  personId: number,
+  mobileTypeId: number,
+  phoneNumber: string,
+  existingPhoneId?: number | null
+): Promise<any> {
+  // Use provided existingPhoneId or look it up
+  let phoneToUpdate: number | null = existingPhoneId ?? null;
+
+  if (phoneToUpdate === null) {
+    // Lookup only if not provided
+    let existingPhoneNumbers: any[] = [];
+    try {
+      existingPhoneNumbers = await client.get<any[]>(
+        ctx,
+        `/api/PhoneNumbers?$filter=PersonId eq ${personId} and NumberTypeValueId eq ${mobileTypeId}&$top=1`
+      );
+    } catch {
+      // Ignore and treat as no existing record
+    }
+    if (existingPhoneNumbers && existingPhoneNumbers.length > 0) {
+      phoneToUpdate = existingPhoneNumbers[0].Id;
+    }
+  }
+
+  if (phoneToUpdate) {
+    // Update existing
+    try {
+      const updated = await client.patch(ctx, `/api/v2/models/phonenumbers/${phoneToUpdate}`, {
+        Number: phoneNumber,
+      });
+      return updated;
+    } catch {
+      // Fallback to v1
+      const updated = await client.patch(ctx, `/api/PhoneNumbers/${phoneToUpdate}`, {
+        Number: phoneNumber,
+      });
+      return updated;
+    }
+  } else {
+    // Create new
+    try {
+      const created = await client.post(ctx, `/api/v2/models/phonenumbers`, {
+        PersonId: personId,
+        NumberTypeValueId: mobileTypeId,
+        Number: phoneNumber,
+      });
+      return created;
+    } catch {
+      // Fallback to v1
+      const created = await client.post(ctx, `/api/PhoneNumbers`, {
+        PersonId: personId,
+        NumberTypeValueId: mobileTypeId,
+        Number: phoneNumber,
+      });
+      return created;
+    }
+  }
+}
+
+/**
  * Classify groups by type using discovery map.
  */
 async function getPersonGroups(
@@ -670,36 +769,104 @@ export const rockPeopleTool: GatewayTool = {
             message: 'Person not found.',
           });
         }
-        const data: any = {};
-        if (email !== undefined) data.Email = email;
-        if (phone !== undefined) data.MobilePhoneNumber = phone;
-        if (firstName !== undefined) data.FirstName = firstName;
-        if (lastName !== undefined) data.LastName = lastName;
 
-        // Perform authorization check BEFORE mutation, even for dry-runs
-        const descriptor = {
-          tool: 'rock_people',
-          action: parsed.action,
-          model: 'people',
-          operation: 'patch' as const,
-          fields: Object.keys(data),
-        };
-        const authz = authorizeWrite(ctx, descriptor);
-        if (!authz.allowed) {
-          auditLogger.log(ctx, {
+        // Build Person data (excluding phone, which goes to PhoneNumber entity)
+        const personData: any = {};
+        if (email !== undefined) personData.Email = email;
+        if (firstName !== undefined) personData.FirstName = firstName;
+        if (lastName !== undefined) personData.LastName = lastName;
+
+        // Build phone intent (if phone is being updated)
+        let phoneIntent: any = undefined;
+        let mobileTypeId: number | null = null;
+        let phoneOperation: 'create' | 'patch' | undefined = undefined;
+        let existingPhoneId: number | null = null;
+        if (phone !== undefined) {
+          mobileTypeId = await resolveMobilePhoneTypeId(rockClient, ctx);
+          if (!mobileTypeId) {
+            return formatResponse(parsed.action, ctx, null, {
+              code: 'PHONE_TYPE_RESOLUTION_ERROR',
+              message: 'Could not resolve Mobile phone type DefinedValue.',
+            });
+          }
+
+          // Determine whether we'll create or patch by checking for existing Mobile PhoneNumber
+          // This lookup is a read-only check to determine authorization, not an unauthorized side effect.
+          let existingPhoneNumbers: any[] = [];
+          try {
+            existingPhoneNumbers = await rockClient.get<any[]>(
+              ctx,
+              `/api/PhoneNumbers?$filter=PersonId eq ${id} and NumberTypeValueId eq ${mobileTypeId}&$top=1`
+            );
+          } catch {
+            // Ignore and treat as no existing record
+          }
+
+          phoneOperation = (existingPhoneNumbers && existingPhoneNumbers.length > 0) ? 'patch' : 'create';
+          if (existingPhoneNumbers && existingPhoneNumbers.length > 0) {
+            existingPhoneId = existingPhoneNumbers[0].Id;
+          }
+          phoneIntent = {
+            number: phone,
+            numberTypeValueId: mobileTypeId,
+          };
+        }
+
+        // Check authorization for Person fields
+        let authz: any = { allowed: true };
+        if (Object.keys(personData).length > 0) {
+          const descriptor = {
             tool: 'rock_people',
             action: parsed.action,
-            target: { model: 'people', id },
-            dryRun,
-            commit,
-            reason,
-            outcome: 'denied',
-            errorCode: authz.code,
-          });
-          return formatResponse(parsed.action, ctx, null, {
-            code: authz.code || 'AUTHORIZATION_DENIED',
-            message: authz.reason || 'Authorization denied.',
-          });
+            model: 'people',
+            operation: 'patch' as const,
+            fields: Object.keys(personData),
+          };
+          authz = authorizeWrite(ctx, descriptor);
+          if (!authz.allowed) {
+            auditLogger.log(ctx, {
+              tool: 'rock_people',
+              action: parsed.action,
+              target: { model: 'people', id },
+              dryRun,
+              commit,
+              reason,
+              outcome: 'denied',
+              errorCode: authz.code,
+            });
+            return formatResponse(parsed.action, ctx, null, {
+              code: authz.code || 'AUTHORIZATION_DENIED',
+              message: authz.reason || 'Authorization denied.',
+            });
+          }
+        }
+
+        // Check authorization for PhoneNumber if phone is being updated
+        if (phoneIntent && phoneOperation) {
+          const phoneDescriptor = {
+            tool: 'rock_people',
+            action: parsed.action,
+            model: 'phonenumbers',
+            operation: phoneOperation,
+            fields: ['Number', 'PersonId', 'NumberTypeValueId'],
+          };
+          authz = authorizeWrite(ctx, phoneDescriptor);
+          if (!authz.allowed) {
+            auditLogger.log(ctx, {
+              tool: 'rock_people',
+              action: parsed.action,
+              target: { model: 'phonenumbers', id },
+              dryRun,
+              commit,
+              reason,
+              outcome: 'denied',
+              errorCode: authz.code,
+            });
+            return formatResponse(parsed.action, ctx, null, {
+              code: authz.code || 'AUTHORIZATION_DENIED',
+              message: authz.reason || 'Authorization denied.',
+            });
+          }
         }
 
         const shouldMutate = commit && !dryRun;
@@ -713,31 +880,115 @@ export const rockPeopleTool: GatewayTool = {
             reason,
             outcome: 'allowed',
           });
-          return formatResponse(parsed.action, ctx, {
+          const dryRunResponse: any = {
             dryRun: true,
             committed: false,
             target: { id },
-            data,
+          };
+          if (Object.keys(personData).length > 0) {
+            dryRunResponse.data = personData;
+          }
+          if (phoneIntent) {
+            dryRunResponse.phoneIntent = phoneIntent;
+          }
+          return formatResponse(parsed.action, ctx, dryRunResponse);
+        }
+
+        // Perform mutations with error handling for partial failures
+        let personResult: any = undefined;
+        let phoneResult: any = undefined;
+        let personError: any = undefined;
+        let phoneError: any = undefined;
+
+        // Patch Person (if there are person fields to update)
+        if (Object.keys(personData).length > 0) {
+          try {
+            try {
+              personResult = await rockClient.patch(ctx, `/api/v2/models/people/${id}`, personData);
+            } catch {
+              personResult = await rockClient.patch(ctx, `/api/People/${id}`, personData);
+            }
+          } catch (err) {
+            personError = err;
+          }
+        }
+
+        // Upsert PhoneNumber (if phone is being updated)
+        if (phoneIntent && mobileTypeId) {
+          try {
+            phoneResult = await upsertMobilePhoneNumber(rockClient, ctx, id, mobileTypeId, phone!, existingPhoneId);
+          } catch (err) {
+            phoneError = err;
+          }
+        }
+
+        // Determine outcome based on what succeeded/failed
+        const bothSucceeded = !personError && !phoneError;
+        const neitherSucceeded = personError && phoneError;
+
+        if (bothSucceeded) {
+          auditLogger.log(ctx, {
+            tool: 'rock_people',
+            action: parsed.action,
+            target: { model: 'people', id },
+            dryRun: false,
+            commit: true,
+            reason,
+            outcome: 'success',
           });
+          const committedResponse: any = { committed: true };
+          if (personResult) committedResponse.personResult = personResult;
+          if (phoneResult) committedResponse.phoneResult = phoneResult;
+          return formatResponse(parsed.action, ctx, committedResponse);
+        } else if (neitherSucceeded) {
+          // Both failed: report as error
+          auditLogger.log(ctx, {
+            tool: 'rock_people',
+            action: parsed.action,
+            target: { model: 'people', id },
+            dryRun: false,
+            commit: true,
+            reason,
+            outcome: 'error',
+            errorCode: 'UPDATE_CONTACT_ERROR',
+          });
+          const errors: string[] = [];
+          if (personError) errors.push(`Person update failed: ${personError.message}`);
+          if (phoneError) errors.push(`Phone update failed: ${phoneError.message}`);
+          return formatResponse(parsed.action, ctx, null, {
+            code: 'UPDATE_CONTACT_ERROR',
+            message: errors.join(' | '),
+          });
+        } else {
+          // Partial failure: one succeeded, one failed
+          auditLogger.log(ctx, {
+            tool: 'rock_people',
+            action: parsed.action,
+            target: { model: 'people', id },
+            dryRun: false,
+            commit: true,
+            reason,
+            outcome: 'error',
+            errorCode: 'UPDATE_CONTACT_PARTIAL',
+          });
+          const partialResponse: any = {
+            committed: false,
+            partial: true,
+            results: {},
+            errors: {},
+          };
+          if (personResult) {
+            partialResponse.results.person = personResult;
+          } else if (personError) {
+            partialResponse.errors.person = personError.message;
+          }
+          if (phoneResult) {
+            partialResponse.results.phone = phoneResult;
+          } else if (phoneError) {
+            partialResponse.errors.phone = phoneError.message;
+          }
+          return formatResponse(parsed.action, ctx, partialResponse);
         }
-
-        let result;
-        try {
-          result = await rockClient.patch(ctx, `/api/v2/models/people/${id}`, data);
-        } catch {
-          result = await rockClient.patch(ctx, `/api/People/${id}`, data);
-        }
-
-        auditLogger.log(ctx, {
-          tool: 'rock_people',
-          action: parsed.action,
-          target: { model: 'people', id },
-          dryRun: false,
-          commit: true,
-          reason,
-          outcome: 'success',
-        });
-        return formatResponse(parsed.action, ctx, { committed: true, result });
       } catch (err: any) {
         auditLogger.log(ctx, {
           tool: 'rock_people',

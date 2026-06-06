@@ -28,7 +28,11 @@ const MODEL_ALLOWLIST: Record<
 > = {
   people: {
     operations: new Set(['patch', 'patchAttributes', 'bulkPatch']),
-    fields: new Set(['Email', 'MobilePhoneNumber', 'Phone', 'FirstName', 'LastName', 'NickName']),
+    fields: new Set(['Email', 'FirstName', 'LastName', 'NickName']),
+  },
+  phonenumbers: {
+    operations: new Set(['create', 'patch']),
+    fields: new Set(['PersonId', 'NumberTypeValueId', 'Number', 'IsMessagingEnabled']),
   },
   notes: {
     operations: new Set(['create']),
