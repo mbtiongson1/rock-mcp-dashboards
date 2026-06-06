@@ -202,6 +202,32 @@ export const rockMinistryTool: GatewayTool = {
           message: 'Write actions disallowed in readonly mode.',
         });
       }
+
+      // Perform authorization check BEFORE any rockClient call
+      const descriptor = {
+        tool: 'rock_ministry',
+        action: parsed.action,
+        model: 'groupmembers',
+        operation: 'create' as const,
+      };
+      const authz = authorizeWrite(ctx, descriptor);
+      if (!authz.allowed) {
+        auditLogger.log(ctx, {
+          tool: 'rock_ministry',
+          action: parsed.action,
+          target: { model: 'groupmembers' },
+          dryRun,
+          commit,
+          reason,
+          outcome: 'denied',
+          errorCode: authz.code,
+        });
+        return formatResponse(parsed.action, ctx, null, {
+          code: authz.code || 'AUTHORIZATION_DENIED',
+          message: authz.reason || 'Authorization denied.',
+        });
+      }
+
       try {
         let existing: any[] = [];
         try {
@@ -234,32 +260,6 @@ export const rockMinistryTool: GatewayTool = {
           GroupMemberStatus: status === 'Active' ? 1 : 0,
         };
         if (targetRoleId) payload.GroupRoleId = targetRoleId;
-
-        // Perform authorization check BEFORE mutation, even for dry-runs
-        const descriptor = {
-          tool: 'rock_ministry',
-          action: parsed.action,
-          model: 'groupmembers',
-          operation: isUpdating ? ('patch' as const) : ('create' as const),
-          fields: Object.keys(payload),
-        };
-        const authz = authorizeWrite(ctx, descriptor);
-        if (!authz.allowed) {
-          auditLogger.log(ctx, {
-            tool: 'rock_ministry',
-            action: parsed.action,
-            target: { model: 'groupmembers', id: targetMemberId || undefined },
-            dryRun,
-            commit,
-            reason,
-            outcome: 'denied',
-            errorCode: authz.code,
-          });
-          return formatResponse(parsed.action, ctx, null, {
-            code: authz.code || 'AUTHORIZATION_DENIED',
-            message: authz.reason || 'Authorization denied.',
-          });
-        }
 
         const shouldMutate = commit && !dryRun;
         if (!shouldMutate) {
@@ -333,6 +333,32 @@ export const rockMinistryTool: GatewayTool = {
           message: 'Write actions disallowed in readonly mode.',
         });
       }
+
+      // Perform authorization check BEFORE any rockClient call
+      const descriptor = {
+        tool: 'rock_ministry',
+        action: parsed.action,
+        model: 'groupmembers',
+        operation: 'delete' as const,
+      };
+      const authz = authorizeWrite(ctx, descriptor);
+      if (!authz.allowed) {
+        auditLogger.log(ctx, {
+          tool: 'rock_ministry',
+          action: parsed.action,
+          target: { model: 'groupmembers' },
+          dryRun,
+          commit,
+          reason,
+          outcome: 'denied',
+          errorCode: authz.code,
+        });
+        return formatResponse(parsed.action, ctx, null, {
+          code: authz.code || 'AUTHORIZATION_DENIED',
+          message: authz.reason || 'Authorization denied.',
+        });
+      }
+
       try {
         let targetId = groupMemberId;
         if (!targetId && groupId && personId) {
@@ -346,31 +372,6 @@ export const rockMinistryTool: GatewayTool = {
           return formatResponse(parsed.action, ctx, null, {
             code: 'NOT_FOUND',
             message: 'Group member record not found.',
-          });
-        }
-
-        // Perform authorization check BEFORE mutation, even for dry-runs
-        const descriptor = {
-          tool: 'rock_ministry',
-          action: parsed.action,
-          model: 'groupmembers',
-          operation: 'delete' as const,
-        };
-        const authz = authorizeWrite(ctx, descriptor);
-        if (!authz.allowed) {
-          auditLogger.log(ctx, {
-            tool: 'rock_ministry',
-            action: parsed.action,
-            target: { model: 'groupmembers', id: targetId },
-            dryRun,
-            commit,
-            reason,
-            outcome: 'denied',
-            errorCode: authz.code,
-          });
-          return formatResponse(parsed.action, ctx, null, {
-            code: authz.code || 'AUTHORIZATION_DENIED',
-            message: authz.reason || 'Authorization denied.',
           });
         }
 
@@ -435,6 +436,32 @@ export const rockMinistryTool: GatewayTool = {
           message: 'Write actions disallowed in readonly mode.',
         });
       }
+
+      // Perform authorization check BEFORE any mutation or side effects
+      const descriptor = {
+        tool: 'rock_ministry',
+        action: parsed.action,
+        model: 'attendances',
+        operation: 'create' as const,
+      };
+      const authz = authorizeWrite(ctx, descriptor);
+      if (!authz.allowed) {
+        auditLogger.log(ctx, {
+          tool: 'rock_ministry',
+          action: parsed.action,
+          target: { model: 'attendances' },
+          dryRun,
+          commit,
+          reason,
+          outcome: 'denied',
+          errorCode: authz.code,
+        });
+        return formatResponse(parsed.action, ctx, null, {
+          code: authz.code || 'AUTHORIZATION_DENIED',
+          message: authz.reason || 'Authorization denied.',
+        });
+      }
+
       try {
         const aliases = await rockClient.get<any[]>(ctx, `/api/PersonAlias?$filter=PersonId eq ${personId}`);
         if (!aliases || aliases.length === 0) {
@@ -510,32 +537,6 @@ export const rockMinistryTool: GatewayTool = {
           StartDateTime: formattedDate,
           CampusId: campusId,
         };
-
-        // Perform authorization check BEFORE mutation, even for dry-runs
-        const descriptor = {
-          tool: 'rock_ministry',
-          action: parsed.action,
-          model: 'attendances',
-          operation: isUpdating ? ('patch' as const) : ('create' as const),
-          fields: Object.keys(payload),
-        };
-        const authz = authorizeWrite(ctx, descriptor);
-        if (!authz.allowed) {
-          auditLogger.log(ctx, {
-            tool: 'rock_ministry',
-            action: parsed.action,
-            target: { model: 'attendances', id: targetAttendanceId || undefined },
-            dryRun,
-            commit,
-            reason,
-            outcome: 'denied',
-            errorCode: authz.code,
-          });
-          return formatResponse(parsed.action, ctx, null, {
-            code: authz.code || 'AUTHORIZATION_DENIED',
-            message: authz.reason || 'Authorization denied.',
-          });
-        }
 
         if (!shouldMutate) {
           auditLogger.log(ctx, {
