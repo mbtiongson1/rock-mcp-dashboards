@@ -322,7 +322,7 @@ export class DiscoveryService {
     } catch (err: any) {
       // No v1 fallback exists; v17.7 EntitySearches route returns 404.
       // Only way to list entity searches is via v2 with proper REST v2 access.
-      const statusMatch = err.message.match(/\((\d+)\s+/);
+      const statusMatch = err.message.match(/\((\d+)[\s)]/);
       const status = statusMatch ? parseInt(statusMatch[1], 10) : 0;
       if (status === 401) {
         warnings.push('entity search discovery requires REST v2 access (API key currently returns 401 on v2 endpoints)');

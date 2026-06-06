@@ -7,6 +7,12 @@ import { RockClient } from '../rock/client.js';
 import { escapeODataString } from '../rock/query.js';
 
 /**
+ * Entity search v2 endpoint for saved searches (no v1 equivalent).
+ * Used in both searchByKey and count actions with a specific search key appended.
+ */
+const ENTITY_SEARCH_V2_ENDPOINT = '/api/v2/models/entitysearches/search';
+
+/**
  * Allowlisted models for raw search/count-by-where operations.
  * searchByKey, get, and attributeValues are not subject to this allowlist.
  */
@@ -231,7 +237,7 @@ export const rockEntityTool: GatewayTool = {
           // Generic EntitySearch endpoint (v2 saved-search-by-key)
           // Note (Rock v17.7): Only v2 endpoint works for saved searches.
           // No v1 fallback exists (/api/EntitySearches returns 404).
-          endpoint = `/api/v2/models/entitysearches/search/${searchKey}`;
+          endpoint = `${ENTITY_SEARCH_V2_ENDPOINT}/${searchKey}`;
         }
 
         const queryBag = {
@@ -267,7 +273,7 @@ export const rockEntityTool: GatewayTool = {
         try {
           // Use the EntitySearch endpoint with large limit to fetch all results
           // Note (Rock v17.7): Only v2 endpoint works for saved searches.
-          const result = await rockClient.post(ctx, `/api/v2/models/entitysearches/search/${searchKey}`, {
+          const result = await rockClient.post(ctx, `${ENTITY_SEARCH_V2_ENDPOINT}/${searchKey}`, {
             Offset: 0,
             Limit: 1000,
           });
