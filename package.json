@@ -1,0 +1,39 @@
+{
+  "name": "rock-mcp",
+  "version": "1.0.0",
+  "description": "Rock RMS MCP Server and MCP Apps for Favor Church Manila",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "dev:stdio": "tsx src/index.ts --stdio",
+    "build": "tsc && npm run build:apps",
+    "build:apps": "vite build",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/ext-apps": "^0.3.0",
+    "@modelcontextprotocol/sdk": "^1.0.1",
+    "@upstash/redis": "^1.31.0",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "jose": "^6.2.3",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.12.12",
+    "eslint": "^10.4.1",
+    "tsx": "^4.10.3",
+    "typescript": "^5.4.5",
+    "typescript-eslint": "^8.60.1",
+    "vite": "^5.2.11",
+    "vite-plugin-singlefile": "^2.0.1",
+    "vitest": "^1.6.0"
+  }
+}

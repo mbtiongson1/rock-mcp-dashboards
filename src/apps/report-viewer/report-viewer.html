@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Rock Report Viewer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-primary: #0b0f19;
+      --bg-secondary: #161c2d;
+      --bg-tertiary: #1f2a40;
+      --accent-color: #4f46e5;
+      --accent-hover: #6366f1;
+      --text-primary: #f3f4f6;
+      --text-secondary: #9ca3af;
+      --border-color: #2d3748;
+      --success-color: #10b981;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background-color: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+      padding: 2rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+
+    h1, h2, h3 {
+      font-family: 'Outfit', sans-serif;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background-color: var(--bg-secondary);
+      padding: 1.5rem;
+      border-radius: 12px;
+      border: 1px solid var(--border-color);
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+    }
+
+    .title-group h1 {
+      font-size: 1.8rem;
+      color: #ffffff;
+      margin-bottom: 0.25rem;
+    }
+
+    .title-group p {
+      font-size: 0.9rem;
+      color: var(--text-secondary);
+    }
+
+    .actions {
+      display: flex;
+      gap: 0.75rem;
+    }
+
+    button {
+      background-color: var(--accent-color);
+      color: #ffffff;
+      border: none;
+      padding: 0.6rem 1.2rem;
+      border-radius: 8px;
+      font-weight: 500;
+      font-size: 0.9rem;
+      cursor: pointer;
+      transition: background-color 0.2s, transform 0.1s;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    button:hover {
+      background-color: var(--accent-hover);
+    }
+
+    button:active {
+      transform: scale(0.98);
+    }
+
+    button.secondary {
+      background-color: transparent;
+      border: 1px solid var(--border-color);
+      color: var(--text-primary);
+    }
+
+    button.secondary:hover {
+      background-color: var(--bg-tertiary);
+    }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem;
+    }
+
+    .card {
+      background-color: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      padding: 1.25rem;
+      border-radius: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .card .label {
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .card .value {
+      font-size: 1.8rem;
+      font-weight: 700;
+      color: #ffffff;
+    }
+
+    .controls {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .search-input {
+      flex: 1;
+      max-width: 400px;
+      position: relative;
+    }
+
+    .search-input input {
+      width: 100%;
+      background-color: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      padding: 0.75rem 1rem;
+      border-radius: 8px;
+      color: var(--text-primary);
+      font-size: 0.9rem;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    .search-input input:focus {
+      border-color: var(--accent-color);
+    }
+
+    .table-container {
+      background-color: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      overflow-x: auto;
+      box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 0.9rem;
+    }
+
+    th {
+      background-color: var(--bg-tertiary);
+      color: #ffffff;
+      font-weight: 600;
+      padding: 1rem 1.25rem;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    td {
+      padding: 1rem 1.25rem;
+      border-bottom: 1px solid var(--border-color);
+      color: var(--text-primary);
+    }
+
+    tr:last-child td {
+      border-bottom: none;
+    }
+
+    tr:hover td {
+      background-color: rgba(255, 255, 255, 0.02);
+    }
+
+    .status-badge {
+      display: inline-block;
+      padding: 0.25rem 0.6rem;
+      border-radius: 20px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .status-badge.active {
+      background-color: rgba(16, 185, 129, 0.15);
+      color: var(--success-color);
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 3rem;
+      color: var(--text-secondary);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="title-group">
+      <h1 id="report-title">Rock Report</h1>
+      <p id="report-subtitle">Loading dataset...</p>
+    </div>
+    <div class="actions">
+      <button id="btn-refresh" class="secondary">Refresh</button>
+      <button id="btn-export">Export CSV</button>
+    </div>
+  </header>
+
+  <div class="summary-grid">
+    <div class="card">
+      <div class="label">Total Records</div>
+      <div class="value" id="stat-total">0</div>
+    </div>
+    <div class="card">
+      <div class="label">Columns</div>
+      <div class="value" id="stat-cols">0</div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <div class="search-input">
+      <input type="text" id="search-box" placeholder="Search within this dataset...">
+    </div>
+  </div>
+
+  <div class="table-container">
+    <table id="data-table">
+      <thead>
+        <tr id="table-headers">
+          <!-- Headers populated dynamically -->
+        </tr>
+      </thead>
+      <tbody id="table-body">
+        <tr>
+          <td colspan="100%" class="empty-state">No data loaded.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <script type="module" src="./report-viewer.ts"></script>
+</body>
+</html>
