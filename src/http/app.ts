@@ -1,6 +1,6 @@
 import express from 'express';
 import cors from 'cors';
-import { createAuthMiddleware } from './oauth.js';
+import { createAuthMiddleware, OAuthRockContext } from './oauth.js';
 import { resolveMode, ScopeError } from '../mcp/modes.js';
 import { RockClientImpl } from '../rock/client.js';
 import { RockUserResolver } from '../auth/rock-user-resolver.js';
@@ -42,8 +42,8 @@ export function createApp() {
   const authMiddleware = createAuthMiddleware();
 
   const handleMcpRequest = (endpointKind: 'readonly' | 'readwrite' | 'mcp') => {
-    return async (req: express.Request, res: express.Response) => {
-      const ctx = req.oauthContext;
+    return async (req: any, res: any) => {
+      const ctx = req.oauthContext as OAuthRockContext | undefined;
       if (!ctx) {
         res.status(500).json({ error: 'OAuth context not initialized' });
         return;

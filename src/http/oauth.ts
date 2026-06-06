@@ -1,4 +1,3 @@
-import { Request, Response, NextFunction } from 'express';
 import * as crypto from 'crypto';
 import * as jose from 'jose';
 
@@ -45,7 +44,7 @@ export interface VerifyTokenOptions {
 export function createAuthMiddleware(options: VerifyTokenOptions = {}) {
   const verifyToken = options.verifyToken || defaultVerifyToken;
 
-  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  return async (req: any, res: any, next: any): Promise<void> => {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       res.status(401).json({ error: 'Missing or invalid Authorization header' });
