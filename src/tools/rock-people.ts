@@ -8,7 +8,12 @@ import { quoteLinqString, quoteODataString, assertValidGuid } from '../rock/quer
 import { AuditLogger } from '../auth/audit.js';
 import { authorizeWrite } from '../auth/authorization.js';
 
-const rockPeopleSchema = z.discriminatedUnion('action', [
+// Named constants
+const FAMILY_GROUP_TYPE_NAME = 'Family';
+const ATTENDANCE_REGULAR_RATIO = 0.5; // >= 50% of weeks => 'Regular'
+
+// Read-only action schemas
+const readOnlyPeopleActions = [
   z.object({
     action: z.literal('find'),
     query: z.string().min(1),
@@ -65,6 +70,10 @@ const rockPeopleSchema = z.discriminatedUnion('action', [
       search: z.string().optional(),
     }),
   }),
+] as const;
+
+// Write action schemas
+const writeActions = [
   z.object({
     action: z.literal('updateContactInfo'),
     personId: z.number().optional(),
@@ -108,9 +117,21 @@ const rockPeopleSchema = z.discriminatedUnion('action', [
     commit: z.boolean().default(false),
     reason: z.string().min(1),
   }),
+] as const;
+
+const rockPeopleSchema = z.discriminatedUnion('action', [
+  ...readOnlyPeopleActions,
+  ...writeActions,
 ]);
 
 const auditLogger = new AuditLogger();
+
+/**
+ * Get discovery service from context with proper typing.
+ */
+function getDiscoveryService(ctx: OAuthRockContext): any {
+  return (ctx as any).discoveryService;
+}
 
 async function resolvePersonId(client: RockClient, ctx: OAuthRockContext, person: { id?: number; guid?: string; search?: string }): Promise<number | null> {
   if (person.id) return person.id;
@@ -229,7 +250,7 @@ async function getFamily(
     let familyGroupTypeId: number | null = null;
     try {
       const groupTypes = await client.post<any[]>(ctx, '/api/v2/models/grouptypes/search', {
-        Where: 'Name == "Family"',
+        Where: `Name == "${FAMILY_GROUP_TYPE_NAME}"`,
       });
       if (groupTypes && groupTypes.length > 0) {
         familyGroupTypeId = groupTypes[0].Id;
@@ -237,7 +258,7 @@ async function getFamily(
     } catch {
       // Try v1 fallback
       try {
-        const groupTypes = await client.get<any[]>(ctx, `/api/GroupTypes?$filter=substringof('Family', Name) eq true`);
+        const groupTypes = await client.get<any[]>(ctx, `/api/GroupTypes?$filter=substringof('${FAMILY_GROUP_TYPE_NAME}', Name) eq true`);
         if (groupTypes && groupTypes.length > 0) {
           familyGroupTypeId = groupTypes[0].Id;
         }
@@ -404,9 +425,9 @@ async function getAttendanceSummary(
 
     const attendedCount = attendances ? attendances.length : 0;
 
-    // Simple heuristic: Regular >= 50% of weeks, Occasional >= 1, else Inactive
+    // Simple heuristic: Regular >= threshold of weeks, Occasional >= 1, else Inactive
     let consistency = 'Inactive';
-    if (attendedCount >= windowWeeks * 0.5) {
+    if (attendedCount >= windowWeeks * ATTENDANCE_REGULAR_RATIO) {
       consistency = 'Regular';
     } else if (attendedCount >= 1) {
       consistency = 'Occasional';
@@ -477,62 +498,8 @@ export const rockPeopleTool: GatewayTool = {
   schemaForMode(mode: McpMode, scopes: Set<McpScope>): z.ZodTypeAny | null {
     if (mode !== 'readwrite' || !scopes.has('write')) {
       return z.discriminatedUnion('action', [
-        z.object({
-          action: z.literal('find'),
-          query: z.string().min(1),
-          limit: z.number().int().positive().max(100).default(20),
-        }),
-        z.object({
-          action: z.literal('profile'),
-          person: z.object({
-            id: z.number().optional(),
-            guid: z.string().optional(),
-            search: z.string().optional(),
-          }),
-          include: z.array(z.enum(['groups', 'family', 'connectionStatus', 'attendanceSummary', 'servingSummary'])).optional(),
-          includeSensitive: z.boolean().default(false),
-        }),
-        z.object({
-          action: z.literal('groups'),
-          person: z.object({
-            id: z.number().optional(),
-            guid: z.string().optional(),
-            search: z.string().optional(),
-          }),
-        }),
-        z.object({
-          action: z.literal('family'),
-          person: z.object({
-            id: z.number().optional(),
-            guid: z.string().optional(),
-            search: z.string().optional(),
-          }),
-        }),
-        z.object({
-          action: z.literal('connectionStatus'),
-          person: z.object({
-            id: z.number().optional(),
-            guid: z.string().optional(),
-            search: z.string().optional(),
-          }),
-        }),
-        z.object({
-          action: z.literal('attendanceSummary'),
-          person: z.object({
-            id: z.number().optional(),
-            guid: z.string().optional(),
-            search: z.string().optional(),
-          }),
-          windowWeeks: z.number().int().positive().max(52).default(12),
-        }),
-        z.object({
-          action: z.literal('servingSummary'),
-          person: z.object({
-            id: z.number().optional(),
-            guid: z.string().optional(),
-            search: z.string().optional(),
-          }),
-        }),
+        readOnlyPeopleActions[0],
+        ...readOnlyPeopleActions.slice(1),
       ]);
     }
     return rockPeopleSchema;
@@ -584,7 +551,7 @@ export const rockPeopleTool: GatewayTool = {
 
     if (parsed.action === 'profile') {
       const { person, include, includeSensitive } = parsed;
-      const discoveryService = (ctx as any).discoveryService;
+      const discoveryService = getDiscoveryService(ctx);
       try {
         let match: any = null;
 
@@ -1010,7 +977,7 @@ export const rockPeopleTool: GatewayTool = {
           });
         }
 
-        const discoveryService = (ctx as any).discoveryService;
+        const discoveryService = getDiscoveryService(ctx);
         const groupData = await getPersonGroups(rockClient, ctx, id, discoveryService);
 
         return formatResponse(parsed.action, ctx, groupData);
@@ -1055,7 +1022,7 @@ export const rockPeopleTool: GatewayTool = {
           });
         }
 
-        const discoveryService = (ctx as any).discoveryService;
+        const discoveryService = getDiscoveryService(ctx);
         const connData = await getConnectionStatus(rockClient, ctx, id, discoveryService);
 
         return formatResponse(parsed.action, ctx, connData);
@@ -1100,7 +1067,7 @@ export const rockPeopleTool: GatewayTool = {
           });
         }
 
-        const discoveryService = (ctx as any).discoveryService;
+        const discoveryService = getDiscoveryService(ctx);
         const servData = await getServingSummary(rockClient, ctx, id, discoveryService);
 
         return formatResponse(parsed.action, ctx, servData);
