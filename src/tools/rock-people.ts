@@ -1087,6 +1087,15 @@ export const rockPeopleTool: GatewayTool = {
           message: 'Write actions disallowed in readonly mode.',
         });
       }
+
+      // Require connectionOpportunityId to be explicitly provided
+      if (!connectionOpportunityId) {
+        return formatResponse(parsed.action, ctx, null, {
+          code: 'OPPORTUNITY_REQUIRED',
+          message: 'connectionOpportunityId is required to create a follow-up connection request.',
+        });
+      }
+
       try {
         const id = personId || (personGuid ? await resolvePersonId(rockClient, ctx, { guid: personGuid }) : null);
         if (!id) {
@@ -1109,14 +1118,13 @@ export const rockPeopleTool: GatewayTool = {
           assignedAliasId = await resolvePersonAliasId(rockClient, ctx, assignedToId) || undefined;
         }
 
-        let oppId = connectionOpportunityId || 1;
-
         const payload: any = {
-          ConnectionOpportunityId: oppId,
-          ConnectionStatusId: 2, // In Progress
+          ConnectionOpportunityId: connectionOpportunityId,
           PersonAliasId: aliasId,
           Comments: description ? `${title}\n\n${description}` : title,
         };
+        // Omit ConnectionStatusId to let Rock apply its default
+        // (Do not hardcode ConnectionStatusId: 2)
         if (assignedAliasId) {
           payload.AssignedPersonAliasId = assignedAliasId;
         }

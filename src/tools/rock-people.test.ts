@@ -38,6 +38,9 @@ describe('rock_people tool', () => {
       mode: 'readonly',
       rockClient: mockClient,
       discoveryService: mockDiscoveryService,
+      oauth: { subject: 'test-user' },
+      rockUser: { personId: 123 },
+      request: { sessionId: 'session-123' },
     } as unknown as OAuthRockContext;
   });
 
@@ -264,5 +267,67 @@ describe('rock_people tool', () => {
     expect(response.ok).toBe(true);
     expect(response.result.groups).toBeDefined();
     expect(response.result.groups.connectGroups).toHaveLength(1);
+  });
+
+  it('createFollowUpTask should require connectionOpportunityId', async () => {
+    mockCtx.mode = 'readwrite';
+    mockCtx.scopes = new Set(['read', 'write']);
+
+    const result = await rockPeopleTool.handle(
+      {
+        action: 'createFollowUpTask',
+        personId: 123,
+        title: 'Follow up',
+        dryRun: true,
+        commit: false,
+        reason: 'test',
+        // connectionOpportunityId NOT provided
+      },
+      null,
+      mockCtx
+    );
+
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.ok).toBe(false);
+    expect(response.error.code).toBe('OPPORTUNITY_REQUIRED');
+  });
+
+  it('createFollowUpTask should succeed with explicit connectionOpportunityId', async () => {
+    mockCtx.mode = 'readwrite';
+    mockCtx.scopes = new Set(['read', 'write']);
+
+    mockClient.post.mockResolvedValueOnce([
+      { Id: 123, FirstName: 'Alex', LastName: 'Santos' },
+    ]);
+    mockClient.get.mockResolvedValueOnce([{ Id: 5000 }]); // PersonAlias
+    mockClient.post.mockResolvedValueOnce({ Id: 1001 }); // ConnectionRequest created
+
+    const result = await rockPeopleTool.handle(
+      {
+        action: 'createFollowUpTask',
+        personId: 123,
+        title: 'Follow up conversation',
+        description: 'Discuss participation',
+        connectionOpportunityId: 42, // Explicitly provided
+        dryRun: false,
+        commit: true,
+        reason: 'follow-up workflow',
+      },
+      null,
+      mockCtx
+    );
+
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.ok).toBe(true);
+    expect(response.result.committed).toBe(true);
+
+    // Verify ConnectionOpportunityId was passed (not hardcoded 1)
+    const postCall = mockClient.post.mock.calls.find((call: any) =>
+      call[1]?.includes('connectionrequests')
+    );
+    expect(postCall[2].ConnectionOpportunityId).toBe(42);
+
+    // Verify ConnectionStatusId was NOT hardcoded in payload
+    expect(postCall[2].ConnectionStatusId).toBeUndefined();
   });
 });

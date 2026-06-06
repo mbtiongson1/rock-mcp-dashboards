@@ -8,11 +8,14 @@ describe('rock_ministry tool', () => {
   let mockClient: any;
   let mockDiscoveryService: any;
   let mockCtx: any;
+  let mockDatasetStore: any;
 
   beforeEach(() => {
     mockClient = {
       get: vi.fn(),
       post: vi.fn(),
+      patch: vi.fn(),
+      delete: vi.fn(),
     };
 
     mockDiscoveryService = {
@@ -21,13 +24,24 @@ describe('rock_ministry tool', () => {
           connectGroups: [{ id: 10, name: 'Connect Groups', confidence: 1.0 }],
           ministryTeams: [{ id: 11, name: 'Ministry Teams', confidence: 1.0 }],
         },
+        campuses: [
+          { id: 1, name: 'Main Campus', confidence: 1.0 },
+        ],
       }),
+    };
+
+    mockDatasetStore = {
+      put: vi.fn().mockResolvedValue('cghealth_abc123'),
     };
 
     mockCtx = {
       mode: 'readonly',
       rockClient: mockClient,
       discoveryService: mockDiscoveryService,
+      datasetStore: mockDatasetStore,
+      oauth: { subject: 'test-user' },
+      rockUser: { personId: 123 },
+      request: { sessionId: 'session-123' },
     } as unknown as OAuthRockContext;
   });
 
@@ -77,5 +91,187 @@ describe('rock_ministry tool', () => {
     const response = JSON.parse(result.content[0].text!);
     expect(response.ok).toBe(true);
     expect(response.result[0].personName).toBe('Alex Santos');
+  });
+
+  it('should compute connectGroupHealth with real metrics from live groups', async () => {
+    // Mock groups response
+    mockClient.post.mockResolvedValueOnce([
+      { Id: 50, Name: 'Young Adults', GroupTypeId: 10, IsActive: true },
+      { Id: 51, Name: 'Teens', GroupTypeId: 10, IsActive: true },
+      { Id: 52, Name: 'Kids', GroupTypeId: 10, IsActive: true },
+    ]);
+
+    // Mock group members for each group
+    // Group 50: 5 members, 1 leader
+    mockClient.post.mockResolvedValueOnce([
+      { Id: 1001, PersonId: 101, GroupRole: { Name: 'Leader', IsLeader: true } },
+      { Id: 1002, PersonId: 102, GroupRole: { Name: 'Member', IsLeader: false } },
+      { Id: 1003, PersonId: 103, GroupRole: { Name: 'Member', IsLeader: false } },
+      { Id: 1004, PersonId: 104, GroupRole: { Name: 'Member', IsLeader: false } },
+      { Id: 1005, PersonId: 105, GroupRole: { Name: 'Member', IsLeader: false } },
+    ]);
+
+    // Group 51: 3 members, no leader
+    mockClient.post.mockResolvedValueOnce([
+      { Id: 2001, PersonId: 201, GroupRole: { Name: 'Member', IsLeader: false } },
+      { Id: 2002, PersonId: 202, GroupRole: { Name: 'Member', IsLeader: false } },
+      { Id: 2003, PersonId: 203, GroupRole: { Name: 'Member', IsLeader: false } },
+    ]);
+
+    // Group 52: 2 members, 1 leader
+    mockClient.post.mockResolvedValueOnce([
+      { Id: 3001, PersonId: 301, GroupRole: { Name: 'Leader', IsLeader: true } },
+      { Id: 3002, PersonId: 302, GroupRole: { Name: 'Member', IsLeader: false } },
+    ]);
+
+    const result = await rockMinistryTool.handle(
+      { action: 'connectGroupHealth' },
+      null,
+      mockCtx
+    );
+
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.ok).toBe(true);
+
+    const { summary } = response.result;
+    expect(summary.groupCount).toBe(3);
+    expect(summary.activeGroupCount).toBe(3);
+    expect(summary.totalMembers).toBe(10); // 5 + 3 + 2
+    expect(summary.averageMembersPerGroup).toBe(3); // 10 / 3 ≈ 3
+    expect(summary.groupsWithoutLeaders).toBe(1); // Group 51
+    expect(summary.truncated).toBe(false);
+
+    // Verify dataset was stored
+    expect(mockDatasetStore.put).toHaveBeenCalled();
+    expect(response.result.datasetId).toBeDefined();
+  });
+
+  it('connectGroupHealth should filter by campus when provided', async () => {
+    mockClient.post.mockResolvedValueOnce([
+      { Id: 50, Name: 'Young Adults', GroupTypeId: 10, CampusId: 1 },
+    ]);
+
+    mockClient.post.mockResolvedValueOnce([
+      { Id: 1001, PersonId: 101, GroupRole: { Name: 'Leader', IsLeader: true } },
+    ]);
+
+    await rockMinistryTool.handle(
+      { action: 'connectGroupHealth', campus: 'Main Campus' },
+      null,
+      mockCtx
+    );
+
+    // Verify the WHERE clause includes CampusId filter
+    const firstPostCall = mockClient.post.mock.calls[0];
+    expect(firstPostCall[1]).toBe('/api/v2/models/groups/search');
+    expect(firstPostCall[2].Where).toContain('CampusId == 1');
+  });
+
+  it('connectGroupHealth should return error if no connect group type discovered', async () => {
+    mockDiscoveryService.getMap.mockResolvedValueOnce({
+      groupTypes: {
+        connectGroups: [],
+        ministryTeams: [{ id: 11, name: 'Ministry Teams' }],
+      },
+      campuses: [],
+    });
+
+    const result = await rockMinistryTool.handle(
+      { action: 'connectGroupHealth' },
+      null,
+      mockCtx
+    );
+
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.ok).toBe(false);
+    expect(response.error.code).toBe('NO_GROUP_TYPE');
+  });
+
+  it('addOrUpdateGroupMember should return ROLE_UNRESOLVED when no roleId and role cannot be resolved', async () => {
+    mockCtx.mode = 'readwrite';
+    mockCtx.scopes = new Set(['read', 'write']);
+
+    // Mock group fetch that has no GroupType
+    mockClient.get.mockResolvedValueOnce({
+      Id: 50,
+      Name: 'Test Group',
+      GroupTypeId: 10,
+      // No GroupType property
+    });
+
+    // Mock GroupTypeRoles fetch that returns empty
+    mockClient.get.mockResolvedValueOnce([]);
+
+    const result = await rockMinistryTool.handle(
+      {
+        action: 'addOrUpdateGroupMember',
+        groupId: 50,
+        personId: 100,
+        // roleId NOT provided
+        status: 'Active',
+        dryRun: false,
+        commit: true,
+        reason: 'test',
+      },
+      null,
+      mockCtx
+    );
+
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.ok).toBe(false);
+    expect(response.error.code).toBe('ROLE_UNRESOLVED');
+    expect(response.error.message).toContain('pass roleId explicitly');
+  });
+
+  it('addAttendance should omit CampusId when group has no campus', async () => {
+    mockCtx.mode = 'readwrite';
+    mockCtx.scopes = new Set(['read', 'write']);
+
+    // Mock PersonAlias
+    mockClient.get.mockResolvedValueOnce([{ Id: 5000 }]);
+
+    // Mock Group with no CampusId
+    mockClient.get.mockResolvedValueOnce({
+      Id: 50,
+      Name: 'Test Group',
+      // No CampusId
+    });
+
+    // Mock AttendanceOccurrence check (none exists)
+    mockClient.get.mockResolvedValueOnce([]);
+
+    // Mock AttendanceOccurrence creation
+    mockClient.post.mockResolvedValueOnce(9000);
+
+    // Mock Attendance check (none exists)
+    mockClient.get.mockResolvedValueOnce([]);
+
+    // Mock Attendance creation
+    mockClient.post.mockResolvedValueOnce(1001);
+
+    const result = await rockMinistryTool.handle(
+      {
+        action: 'addAttendance',
+        groupId: 50,
+        personId: 100,
+        occurrenceDate: '2025-06-06',
+        didAttend: true,
+        dryRun: false,
+        commit: true,
+        reason: 'test',
+      },
+      null,
+      mockCtx
+    );
+
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.ok).toBe(true);
+
+    // Verify the payload sent to POST does not include CampusId
+    const postCall = mockClient.post.mock.calls.find((call: any) =>
+      call[1]?.includes('attendances')
+    );
+    expect(postCall[2].CampusId).toBeUndefined();
+    expect(postCall[2].OccurrenceId).toBeDefined();
   });
 });

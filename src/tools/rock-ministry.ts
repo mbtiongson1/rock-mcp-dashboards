@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import * as crypto from 'crypto';
 import { GatewayTool, McpToolResult } from './types.js';
 import { McpMode, McpScope } from '../mcp/modes.js';
 import { OAuthRockContext } from '../http/oauth.js';
@@ -6,6 +7,11 @@ import { formatResponse } from './formatter.js';
 import { RockClient } from '../rock/client.js';
 import { AuditLogger } from '../auth/audit.js';
 import { authorizeWrite } from '../auth/authorization.js';
+import { StoredDataset } from './dataset-store.js';
+
+// Constants for bounded analysis
+const MAX_GROUPS_ANALYZED = 100;
+// Note: lowAttendanceGroups detection omitted in favor of boundedness per plan §17.7
 
 const rockMinistrySchema = z.discriminatedUnion('action', [
   z.object({
@@ -181,17 +187,189 @@ export const rockMinistryTool: GatewayTool = {
     }
 
     if (parsed.action === 'connectGroupHealth') {
-      const summary = {
-        campus: parsed.campus || 'All',
-        ageGroup: parsed.ageGroup || 'All',
-        windowWeeks: parsed.windowWeeks,
-        groupCount: 24,
-        activeGroupCount: 22,
-        totalMembers: 212,
-        groupsWithoutLeaders: 2,
-        lowAttendanceGroups: 4,
-      };
-      return formatResponse(parsed.action, ctx, { summary });
+      const { campus, ageGroup, windowWeeks } = parsed;
+      const discoveryService = (ctx as any).discoveryService;
+
+      try {
+        if (!discoveryService) {
+          return formatResponse(parsed.action, ctx, null, {
+            code: 'DISCOVERY_UNAVAILABLE',
+            message: 'Discovery service is not available for group type resolution.',
+          });
+        }
+
+        const map = await discoveryService.getMap(ctx);
+
+        // Resolve Connect Group type
+        if (!map.groupTypes.connectGroups || map.groupTypes.connectGroups.length === 0) {
+          return formatResponse(parsed.action, ctx, null, {
+            code: 'NO_GROUP_TYPE',
+            message: 'No Connect Group type discovered. Please configure connect groups in Rock RMS.',
+          });
+        }
+
+        const connectGroupTypeId = map.groupTypes.connectGroups[0].id;
+
+        // Resolve campus ID if provided
+        let campusId: number | null = null;
+        if (campus) {
+          const matchedCampus = map.campuses.find((c: any) => c.name.toLowerCase().includes(campus.toLowerCase()));
+          if (matchedCampus) {
+            campusId = matchedCampus.id;
+          }
+        }
+
+        // Fetch groups (v2 first, then v1 fallback)
+        let allGroups: any[] = [];
+        const whereClause = campusId
+          ? `GroupTypeId == ${connectGroupTypeId} && IsActive == true && CampusId == ${campusId}`
+          : `GroupTypeId == ${connectGroupTypeId} && IsActive == true`;
+
+        try {
+          allGroups = await rockClient.post(ctx, '/api/v2/models/groups/search', {
+            Where: whereClause,
+            Limit: MAX_GROUPS_ANALYZED + 1, // Request one extra to detect truncation
+          });
+        } catch (_err) {
+          // Fallback to v1
+          const v1Filter = campusId
+            ? `GroupTypeId eq ${connectGroupTypeId} and IsActive eq true and CampusId eq ${campusId}`
+            : `GroupTypeId eq ${connectGroupTypeId} and IsActive eq true`;
+          allGroups = await rockClient.get(ctx, `/api/Groups?$filter=${encodeURIComponent(v1Filter)}&$top=${MAX_GROUPS_ANALYZED + 1}`);
+        }
+
+        const truncated = allGroups.length > MAX_GROUPS_ANALYZED;
+        const groupsToAnalyze = allGroups.slice(0, MAX_GROUPS_ANALYZED);
+
+        // Analyze each group for members and leaders
+        let totalMembers = 0;
+        let groupsWithoutLeaders = 0;
+        const perGroupData: any[] = [];
+
+        for (const group of groupsToAnalyze) {
+          try {
+            // Fetch group members
+            let members: any[] = [];
+            try {
+              members = await rockClient.post(ctx, '/api/v2/models/groupmembers/search', {
+                Where: `GroupId == ${group.Id}`,
+              });
+            } catch (_err) {
+              members = await rockClient.get(ctx, `/api/GroupMembers?$filter=GroupId eq ${group.Id}`);
+            }
+
+            const memberCount = members.length;
+            totalMembers += memberCount;
+
+            // Check for leaders (GroupRole.IsLeader == true)
+            const hasLeader = members.some((m: any) => {
+              const role = m.GroupRole || {};
+              return role.IsLeader === true;
+            });
+
+            if (!hasLeader && memberCount > 0) {
+              groupsWithoutLeaders++;
+            }
+
+            // Compute age group filter if provided
+            let groupMatchesAgeFilter = true;
+            if (ageGroup) {
+              // Best-effort name-based match
+              groupMatchesAgeFilter = (group.Name || '').toLowerCase().includes(ageGroup.toLowerCase());
+            }
+
+            perGroupData.push({
+              groupId: group.Id,
+              groupName: group.Name,
+              memberCount,
+              hasLeader,
+              matchesAgeFilter: groupMatchesAgeFilter,
+            });
+          } catch (err: any) {
+            // Log but continue to next group
+            console.warn(`Error analyzing group ${group.Id}: ${err.message}`);
+          }
+        }
+
+        const analyzedCount = groupsToAnalyze.length;
+        const averageMembersPerGroup = analyzedCount > 0 ? Math.round(totalMembers / analyzedCount) : 0;
+
+        // Build summary
+        const summary: any = {
+          campus: campus || 'All',
+          ageGroup: ageGroup || 'All',
+          windowWeeks,
+          groupCount: Math.max(allGroups.length - (truncated ? 1 : 0), 0), // Account for over-fetch
+          activeGroupCount: analyzedCount,
+          analyzedCount,
+          totalMembers,
+          averageMembersPerGroup,
+          groupsWithoutLeaders,
+          truncated,
+        };
+
+        // Note: lowAttendanceGroups omitted as per plan §17.7 (attendance query too expensive)
+        // Plan requires bounding at MAX_GROUPS_ANALYZED and omitting lowAttendanceGroups with documentation
+
+        // Store dataset via datasetStore if available
+        let datasetId: string | undefined;
+        const datasetStore = (ctx as any).datasetStore;
+        if (datasetStore) {
+          try {
+            const oauthSubjectHash = crypto
+              .createHash('sha256')
+              .update(ctx.oauth.subject || '')
+              .digest('hex');
+
+            const ttlSeconds = parseInt(process.env.ROCK_MCP_DATASET_TTL_SECONDS || '900', 10);
+
+            const dataset: StoredDataset = {
+              id: `cghealth_${crypto.randomBytes(12).toString('hex')}`,
+              owner: {
+                oauthSubjectHash,
+                rockPersonId: ctx.rockUser?.personId,
+                sessionId: ctx.request?.sessionId,
+              },
+              title: `Connect Group Health Report - ${campus || 'All'} - ${new Date().toISOString().split('T')[0]}`,
+              createdAt: new Date().toISOString(),
+              expiresAt: new Date(Date.now() + ttlSeconds * 1000).toISOString(),
+              source: {
+                tool: 'rock_ministry',
+                action: 'connectGroupHealth',
+                model: 'groups',
+              },
+              columns: ['groupId', 'groupName', 'memberCount', 'hasLeader', 'matchesAgeFilter'],
+              rows: perGroupData,
+              summary: JSON.stringify(summary),
+              sensitivity: 'low',
+            };
+
+            await datasetStore.put(dataset);
+            datasetId = dataset.id;
+          } catch (err: any) {
+            console.warn(`Failed to store dataset: ${err.message}`);
+            // Continue without dataset ID
+          }
+        }
+
+        const response: any = { summary };
+        if (datasetId) {
+          response.datasetId = datasetId;
+        }
+        response.discovery = {
+          connectGroupType: {
+            name: map.groupTypes.connectGroups[0].name,
+            confidence: map.groupTypes.connectGroups[0].confidence,
+          },
+        };
+
+        return formatResponse(parsed.action, ctx, response);
+      } catch (err: any) {
+        return formatResponse(parsed.action, ctx, null, {
+          code: 'HEALTH_ANALYSIS_ERROR',
+          message: `Failed to analyze group health: ${err.message}`,
+        });
+      }
     }
 
     if (parsed.action === 'addOrUpdateGroupMember') {
@@ -244,14 +422,28 @@ export const rockMinistryTool: GatewayTool = {
           try {
             const group = await rockClient.get<any>(ctx, `/api/Groups/${groupId}`);
             if (group && group.GroupTypeId) {
-              const roles = await rockClient.get<any[]>(ctx, `/api/GroupTypeRoles?$filter=GroupTypeId eq ${group.GroupTypeId}`);
-              const memberRole = roles.find((r: any) => r.Name.toLowerCase() === 'member');
-              const nonLeaderRole = roles.find((r: any) => !r.IsLeader);
-              targetRoleId = memberRole?.Id || nonLeaderRole?.Id || roles[0]?.Id || 23;
+              // First, try to get the default role from GroupType
+              if (group.GroupType && group.GroupType.DefaultGroupRoleId) {
+                targetRoleId = group.GroupType.DefaultGroupRoleId;
+              } else {
+                // Fallback: fetch roles and pick appropriately
+                const roles = await rockClient.get<any[]>(ctx, `/api/GroupTypeRoles?$filter=GroupTypeId eq ${group.GroupTypeId}`);
+                const memberRole = roles.find((r: any) => r.Name.toLowerCase() === 'member');
+                const nonLeaderRole = roles.find((r: any) => !r.IsLeader);
+                targetRoleId = memberRole?.Id || nonLeaderRole?.Id || roles[0]?.Id;
+              }
             }
           } catch {
-            targetRoleId = 23;
+            // Role resolution failed; will be caught below
           }
+        }
+
+        // Enforce that a role must be resolved (no magic number fallbacks)
+        if (!targetRoleId && !isUpdating) {
+          return formatResponse(parsed.action, ctx, null, {
+            code: 'ROLE_UNRESOLVED',
+            message: 'Could not resolve a group role; pass roleId explicitly.',
+          });
         }
 
         const payload: any = {
@@ -472,12 +664,12 @@ export const rockMinistryTool: GatewayTool = {
         }
         const aliasId = aliases[0].Id;
 
-        let campusId = 1;
+        let campusId: number | null = null;
         try {
           const group = await rockClient.get<any>(ctx, `/api/Groups/${groupId}`);
           if (group && group.CampusId) campusId = group.CampusId;
         } catch {
-          // Ignore
+          // Ignore; campusId may remain null
         }
 
         let dateObj = occurrenceDate ? new Date(occurrenceDate) : new Date();
@@ -530,13 +722,13 @@ export const rockMinistryTool: GatewayTool = {
         const isUpdating = existingAtt && existingAtt.length > 0;
         const targetAttendanceId = isUpdating ? existingAtt[0].Id : null;
 
-        const payload = {
+        const payload: any = {
           OccurrenceId: occurrenceId,
           PersonAliasId: aliasId,
           DidAttend: didAttend,
           StartDateTime: formattedDate,
-          CampusId: campusId,
         };
+        if (campusId) payload.CampusId = campusId;
 
         if (!shouldMutate) {
           auditLogger.log(ctx, {
