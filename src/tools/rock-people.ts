@@ -21,7 +21,49 @@ const rockPeopleSchema = z.discriminatedUnion('action', [
       guid: z.string().optional(),
       search: z.string().optional(),
     }),
+    include: z.array(z.enum(['groups', 'family', 'connectionStatus', 'attendanceSummary', 'servingSummary'])).optional(),
     includeSensitive: z.boolean().default(false),
+  }),
+  z.object({
+    action: z.literal('groups'),
+    person: z.object({
+      id: z.number().optional(),
+      guid: z.string().optional(),
+      search: z.string().optional(),
+    }),
+  }),
+  z.object({
+    action: z.literal('family'),
+    person: z.object({
+      id: z.number().optional(),
+      guid: z.string().optional(),
+      search: z.string().optional(),
+    }),
+  }),
+  z.object({
+    action: z.literal('connectionStatus'),
+    person: z.object({
+      id: z.number().optional(),
+      guid: z.string().optional(),
+      search: z.string().optional(),
+    }),
+  }),
+  z.object({
+    action: z.literal('attendanceSummary'),
+    person: z.object({
+      id: z.number().optional(),
+      guid: z.string().optional(),
+      search: z.string().optional(),
+    }),
+    windowWeeks: z.number().int().positive().max(52).default(12),
+  }),
+  z.object({
+    action: z.literal('servingSummary'),
+    person: z.object({
+      id: z.number().optional(),
+      guid: z.string().optional(),
+      search: z.string().optional(),
+    }),
   }),
   z.object({
     action: z.literal('updateContactInfo'),
@@ -108,6 +150,327 @@ async function resolvePersonAliasId(client: RockClient, ctx: OAuthRockContext, p
   return null;
 }
 
+/**
+ * Classify groups by type using discovery map.
+ */
+async function getPersonGroups(
+  client: RockClient,
+  ctx: OAuthRockContext,
+  personId: number,
+  discoveryService: any
+): Promise<{ connectGroups: any[]; ministryTeams: any[]; other: any[]; warning?: string }> {
+  try {
+    let members: any[] = [];
+    try {
+      members = await client.post(ctx, '/api/v2/models/groupmembers/search', {
+        Where: `PersonId == ${personId}`,
+        Limit: 200,
+      });
+    } catch {
+      members = await client.get(ctx, `/api/GroupMembers?$filter=PersonId eq ${personId}&$top=200&$expand=Group,GroupRole`);
+    }
+
+    const connectGroups: any[] = [];
+    const ministryTeams: any[] = [];
+    const other: any[] = [];
+
+    let map = null;
+    try {
+      if (discoveryService) {
+        map = await discoveryService.getMap(ctx);
+      }
+    } catch {
+      // Tolerate missing discovery
+    }
+
+    const connectGroupTypeIds = map ? map.groupTypes.connectGroups.map((c: any) => c.id) : [];
+    const ministryTeamTypeIds = map ? map.groupTypes.ministryTeams.map((m: any) => m.id) : [];
+
+    for (const m of members) {
+      const group = m.Group || {};
+      const groupTypeId = group.GroupTypeId;
+      const item = {
+        groupId: group.Id,
+        name: group.Name,
+        role: m.GroupRole ? m.GroupRole.Name : 'Member',
+      };
+
+      if (connectGroupTypeIds.includes(groupTypeId)) {
+        connectGroups.push(item);
+      } else if (ministryTeamTypeIds.includes(groupTypeId)) {
+        ministryTeams.push(item);
+      } else {
+        other.push(item);
+      }
+    }
+
+    return { connectGroups, ministryTeams, other };
+  } catch (err: any) {
+    return {
+      connectGroups: [],
+      ministryTeams: [],
+      other: [],
+      warning: `Failed to fetch groups: ${err.message}`,
+    };
+  }
+}
+
+/**
+ * Get family members with privacy-safe data only.
+ */
+async function getFamily(
+  client: RockClient,
+  ctx: OAuthRockContext,
+  personId: number
+): Promise<{ familyMembers: any[]; warning?: string }> {
+  try {
+    // Try to get person's families via groupmembers where GroupType is "Family"
+    // First, find the Family group types
+    let familyGroupTypeId: number | null = null;
+    try {
+      const groupTypes = await client.post<any[]>(ctx, '/api/v2/models/grouptypes/search', {
+        Where: 'Name == "Family"',
+      });
+      if (groupTypes && groupTypes.length > 0) {
+        familyGroupTypeId = groupTypes[0].Id;
+      }
+    } catch {
+      // Try v1 fallback
+      try {
+        const groupTypes = await client.get<any[]>(ctx, `/api/GroupTypes?$filter=substringof('Family', Name) eq true`);
+        if (groupTypes && groupTypes.length > 0) {
+          familyGroupTypeId = groupTypes[0].Id;
+        }
+      } catch {
+        // Fallback: couldn't find family group type
+      }
+    }
+
+    if (!familyGroupTypeId) {
+      return { familyMembers: [] };
+    }
+
+    // Get the person's family group (usually primary)
+    let familyMembers: any[] = [];
+    try {
+      const personGroups = await client.post<any[]>(ctx, '/api/v2/models/groupmembers/search', {
+        Where: `PersonId == ${personId} && Group.GroupTypeId == ${familyGroupTypeId}`,
+      });
+      if (personGroups && personGroups.length > 0) {
+        const familyGroupId = personGroups[0].Group?.Id || personGroups[0].GroupId;
+        if (familyGroupId) {
+          // Now get all members of that family group
+          const allMembers = await client.post<any[]>(ctx, '/api/v2/models/groupmembers/search', {
+            Where: `GroupId == ${familyGroupId}`,
+          });
+          familyMembers = allMembers.map((m: any) => ({
+            personId: m.Person?.Id || m.PersonId,
+            name: m.Person ? `${m.Person.NickName || m.Person.FirstName} ${m.Person.LastName}` : 'Unknown',
+            role: m.GroupRole ? m.GroupRole.Name : 'Family Member',
+          }));
+        }
+      }
+    } catch {
+      // Try v1 fallback
+      try {
+        const familyGroupMembers = await client.get<any[]>(
+          ctx,
+          `/api/GroupMembers?$filter=PersonId eq ${personId} and Group/GroupTypeId eq ${familyGroupTypeId}&$expand=Group&$top=1`
+        );
+        if (familyGroupMembers && familyGroupMembers.length > 0) {
+          const familyGroupId = familyGroupMembers[0].Group?.Id;
+          if (familyGroupId) {
+            const allMembers = await client.get<any[]>(
+              ctx,
+              `/api/GroupMembers?$filter=GroupId eq ${familyGroupId}&$expand=Person,GroupRole`
+            );
+            familyMembers = allMembers.map((m: any) => ({
+              personId: m.Person?.Id,
+              name: m.Person ? `${m.Person.NickName || m.Person.FirstName} ${m.Person.LastName}` : 'Unknown',
+              role: m.GroupRole ? m.GroupRole.Name : 'Family Member',
+            }));
+          }
+        }
+      } catch {
+        // Unable to resolve family
+      }
+    }
+
+    return { familyMembers };
+  } catch (err: any) {
+    return {
+      familyMembers: [],
+      warning: `Failed to fetch family: ${err.message}`,
+    };
+  }
+}
+
+/**
+ * Get connection status and lifecycle from discovery.
+ */
+async function getConnectionStatus(
+  client: RockClient,
+  ctx: OAuthRockContext,
+  personId: number,
+  discoveryService: any
+): Promise<{ connectionStatus?: string; lifecycle?: string; warning?: string }> {
+  try {
+    // Fetch person to get ConnectionStatusValue
+    let person: any = null;
+    try {
+      person = await client.get(ctx, `/api/v2/models/people/${personId}`);
+    } catch {
+      person = await client.get(ctx, `/api/People/${personId}`);
+    }
+
+    const result: any = {};
+
+    if (person && person.ConnectionStatusValue) {
+      result.connectionStatus = person.ConnectionStatusValue;
+    } else if (person && person.ConnectionStatusValueId) {
+      result.connectionStatus = person.ConnectionStatusValueId;
+    }
+
+    // Try to get lifecycle attribute from discovery
+    let lifecycleAttrId: number | null = null;
+    try {
+      if (discoveryService) {
+        const map = await discoveryService.getMap(ctx);
+        if (map.attributes.personLifecycle && map.attributes.personLifecycle.length > 0) {
+          lifecycleAttrId = map.attributes.personLifecycle[0].id;
+        }
+      }
+    } catch {
+      // Tolerate discovery failure
+    }
+
+    if (lifecycleAttrId) {
+      try {
+        const attrs = await client.get<any[]>(
+          ctx,
+          `/api/AttributeValues?$filter=EntityId eq ${personId} and AttributeId eq ${lifecycleAttrId}`
+        );
+        if (attrs && attrs.length > 0) {
+          result.lifecycle = attrs[0].Value;
+        }
+      } catch {
+        // Couldn't fetch attribute value
+      }
+    }
+
+    return result;
+  } catch (err: any) {
+    return { warning: `Failed to fetch connection status: ${err.message}` };
+  }
+}
+
+/**
+ * Compute attendance summary.
+ */
+async function getAttendanceSummary(
+  client: RockClient,
+  ctx: OAuthRockContext,
+  personId: number,
+  windowWeeks: number
+): Promise<{ windowWeeks: number; attendedCount: number; consistency: string; warning?: string }> {
+  try {
+    const aliasId = await resolvePersonAliasId(client, ctx, personId);
+    if (!aliasId) {
+      return {
+        windowWeeks,
+        attendedCount: 0,
+        consistency: 'Inactive',
+        warning: 'Could not resolve person alias ID',
+      };
+    }
+
+    // Calculate cutoff date
+    const now = new Date();
+    const cutoffDate = new Date(now.getTime() - windowWeeks * 7 * 24 * 60 * 60 * 1000);
+    const yyyy = cutoffDate.getFullYear();
+    const mm = String(cutoffDate.getMonth() + 1).padStart(2, '0');
+    const dd = String(cutoffDate.getDate()).padStart(2, '0');
+    const cutoffStr = `${yyyy}-${mm}-${dd}T00:00:00`;
+
+    let attendances: any[] = [];
+    try {
+      attendances = await client.get<any[]>(
+        ctx,
+        `/api/Attendances?$filter=PersonAliasId eq ${aliasId} and StartDateTime ge datetime'${cutoffStr}' and DidAttend eq true`
+      );
+    } catch {
+      // Fallback; assume no attendances
+    }
+
+    const attendedCount = attendances ? attendances.length : 0;
+
+    // Simple heuristic: Regular >= 50% of weeks, Occasional >= 1, else Inactive
+    let consistency = 'Inactive';
+    if (attendedCount >= windowWeeks * 0.5) {
+      consistency = 'Regular';
+    } else if (attendedCount >= 1) {
+      consistency = 'Occasional';
+    }
+
+    return { windowWeeks, attendedCount, consistency };
+  } catch (err: any) {
+    return {
+      windowWeeks,
+      attendedCount: 0,
+      consistency: 'Inactive',
+      warning: `Failed to fetch attendance: ${err.message}`,
+    };
+  }
+}
+
+/**
+ * Get serving summary (ministry teams only).
+ */
+async function getServingSummary(
+  client: RockClient,
+  ctx: OAuthRockContext,
+  personId: number,
+  discoveryService: any
+): Promise<{ serving: any[]; warning?: string }> {
+  const groupData = await getPersonGroups(client, ctx, personId, discoveryService);
+  return {
+    serving: groupData.ministryTeams,
+    warning: groupData.warning,
+  };
+}
+
+/**
+ * Resolve campus name from ID.
+ */
+async function resolveCampusName(
+  client: RockClient,
+  ctx: OAuthRockContext,
+  campusId: number | null | undefined,
+  discoveryService: any
+): Promise<string | null> {
+  if (!campusId) return null;
+
+  try {
+    if (discoveryService) {
+      const map = await discoveryService.getMap(ctx);
+      const campus = map.campuses.find((c: any) => c.id === campusId);
+      if (campus) return campus.name;
+    }
+  } catch {
+    // Fallback
+  }
+
+  // Direct query fallback
+  try {
+    const campus = await client.get<any>(ctx, `/api/Campuses/${campusId}`);
+    if (campus) return campus.Name;
+  } catch {
+    // Ignore
+  }
+
+  return null;
+}
+
 export const rockPeopleTool: GatewayTool = {
   name: 'rock_people',
   title: 'Rock People Directory',
@@ -126,7 +489,49 @@ export const rockPeopleTool: GatewayTool = {
             guid: z.string().optional(),
             search: z.string().optional(),
           }),
+          include: z.array(z.enum(['groups', 'family', 'connectionStatus', 'attendanceSummary', 'servingSummary'])).optional(),
           includeSensitive: z.boolean().default(false),
+        }),
+        z.object({
+          action: z.literal('groups'),
+          person: z.object({
+            id: z.number().optional(),
+            guid: z.string().optional(),
+            search: z.string().optional(),
+          }),
+        }),
+        z.object({
+          action: z.literal('family'),
+          person: z.object({
+            id: z.number().optional(),
+            guid: z.string().optional(),
+            search: z.string().optional(),
+          }),
+        }),
+        z.object({
+          action: z.literal('connectionStatus'),
+          person: z.object({
+            id: z.number().optional(),
+            guid: z.string().optional(),
+            search: z.string().optional(),
+          }),
+        }),
+        z.object({
+          action: z.literal('attendanceSummary'),
+          person: z.object({
+            id: z.number().optional(),
+            guid: z.string().optional(),
+            search: z.string().optional(),
+          }),
+          windowWeeks: z.number().int().positive().max(52).default(12),
+        }),
+        z.object({
+          action: z.literal('servingSummary'),
+          person: z.object({
+            id: z.number().optional(),
+            guid: z.string().optional(),
+            search: z.string().optional(),
+          }),
         }),
       ]);
     }
@@ -178,7 +583,8 @@ export const rockPeopleTool: GatewayTool = {
     }
 
     if (parsed.action === 'profile') {
-      const { person, includeSensitive } = parsed;
+      const { person, include, includeSensitive } = parsed;
+      const discoveryService = (ctx as any).discoveryService;
       try {
         let match: any = null;
 
@@ -236,10 +642,40 @@ export const rockPeopleTool: GatewayTool = {
           },
         };
 
+        // Add campus
+        if (match.PrimaryCampusId || match.CampusId) {
+          const campusName = await resolveCampusName(rockClient, ctx, match.PrimaryCampusId || match.CampusId, discoveryService);
+          if (campusName) {
+            profileResult.person.campus = campusName;
+          }
+        }
+
         if (isAuthorizedForSensitive) {
           profileResult.person.email = match.Email;
           profileResult.person.phone = match.MobilePhoneNumber || match.Phone;
           profileResult.person.birthdate = match.BirthDate || (match.BirthYear ? `${match.BirthYear}-${match.BirthMonth}-${match.BirthDay}` : undefined);
+        }
+
+        // Compose included summaries if requested
+        if (include && include.length > 0) {
+          for (const includeType of include) {
+            if (includeType === 'groups') {
+              const groupData = await getPersonGroups(rockClient, ctx, match.Id, discoveryService);
+              profileResult.groups = groupData;
+            } else if (includeType === 'family') {
+              const familyData = await getFamily(rockClient, ctx, match.Id);
+              profileResult.family = familyData;
+            } else if (includeType === 'connectionStatus') {
+              const connData = await getConnectionStatus(rockClient, ctx, match.Id, discoveryService);
+              profileResult.connectionStatus = connData;
+            } else if (includeType === 'attendanceSummary') {
+              const attData = await getAttendanceSummary(rockClient, ctx, match.Id, 12);
+              profileResult.attendanceSummary = attData;
+            } else if (includeType === 'servingSummary') {
+              const servData = await getServingSummary(rockClient, ctx, match.Id, discoveryService);
+              profileResult.servingSummary = servData;
+            }
+          }
         }
 
         return formatResponse(parsed.action, ctx, profileResult);
@@ -559,6 +995,119 @@ export const rockPeopleTool: GatewayTool = {
         return formatResponse(parsed.action, ctx, null, {
           code: 'CREATE_NOTE_ERROR',
           message: err.message,
+        });
+      }
+    }
+
+    if (parsed.action === 'groups') {
+      const { person } = parsed;
+      try {
+        const id = await resolvePersonId(rockClient, ctx, person);
+        if (!id) {
+          return formatResponse(parsed.action, ctx, null, {
+            code: 'NOT_FOUND',
+            message: 'Person not found.',
+          });
+        }
+
+        const discoveryService = (ctx as any).discoveryService;
+        const groupData = await getPersonGroups(rockClient, ctx, id, discoveryService);
+
+        return formatResponse(parsed.action, ctx, groupData);
+      } catch (err: any) {
+        return formatResponse(parsed.action, ctx, null, {
+          code: 'GROUPS_ERROR',
+          message: `Failed to fetch groups: ${err.message}`,
+        });
+      }
+    }
+
+    if (parsed.action === 'family') {
+      const { person } = parsed;
+      try {
+        const id = await resolvePersonId(rockClient, ctx, person);
+        if (!id) {
+          return formatResponse(parsed.action, ctx, null, {
+            code: 'NOT_FOUND',
+            message: 'Person not found.',
+          });
+        }
+
+        const familyData = await getFamily(rockClient, ctx, id);
+
+        return formatResponse(parsed.action, ctx, familyData);
+      } catch (err: any) {
+        return formatResponse(parsed.action, ctx, null, {
+          code: 'FAMILY_ERROR',
+          message: `Failed to fetch family: ${err.message}`,
+        });
+      }
+    }
+
+    if (parsed.action === 'connectionStatus') {
+      const { person } = parsed;
+      try {
+        const id = await resolvePersonId(rockClient, ctx, person);
+        if (!id) {
+          return formatResponse(parsed.action, ctx, null, {
+            code: 'NOT_FOUND',
+            message: 'Person not found.',
+          });
+        }
+
+        const discoveryService = (ctx as any).discoveryService;
+        const connData = await getConnectionStatus(rockClient, ctx, id, discoveryService);
+
+        return formatResponse(parsed.action, ctx, connData);
+      } catch (err: any) {
+        return formatResponse(parsed.action, ctx, null, {
+          code: 'CONNECTION_STATUS_ERROR',
+          message: `Failed to fetch connection status: ${err.message}`,
+        });
+      }
+    }
+
+    if (parsed.action === 'attendanceSummary') {
+      const { person, windowWeeks } = parsed;
+      try {
+        const id = await resolvePersonId(rockClient, ctx, person);
+        if (!id) {
+          return formatResponse(parsed.action, ctx, null, {
+            code: 'NOT_FOUND',
+            message: 'Person not found.',
+          });
+        }
+
+        const attData = await getAttendanceSummary(rockClient, ctx, id, windowWeeks);
+
+        return formatResponse(parsed.action, ctx, attData);
+      } catch (err: any) {
+        return formatResponse(parsed.action, ctx, null, {
+          code: 'ATTENDANCE_SUMMARY_ERROR',
+          message: `Failed to fetch attendance summary: ${err.message}`,
+        });
+      }
+    }
+
+    if (parsed.action === 'servingSummary') {
+      const { person } = parsed;
+      try {
+        const id = await resolvePersonId(rockClient, ctx, person);
+        if (!id) {
+          return formatResponse(parsed.action, ctx, null, {
+            code: 'NOT_FOUND',
+            message: 'Person not found.',
+          });
+        }
+
+        const discoveryService = (ctx as any).discoveryService;
+        const servData = await getServingSummary(rockClient, ctx, id, discoveryService);
+
+        return formatResponse(parsed.action, ctx, servData);
+      } catch (err: any) {
+        return formatResponse(parsed.action, ctx, null, {
+          code: 'SERVING_SUMMARY_ERROR',
+          message: `Failed to fetch serving summary: ${err.message}`,
         });
       }
     }
