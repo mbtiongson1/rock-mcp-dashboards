@@ -9,7 +9,7 @@ export function getLandingPageHtml(options: {
     : '<span class="badge warning">In-Memory Cache</span>';
 
   const maskedRockUrl = rockUrl
-    ? rockUrl.replace(/(https?:\/\/)([^@]+@)?([^\/]+).*/, '$1$3')
+    ? rockUrl.replace(/(https?:\/\/)([^@]+@)?([^/]+).*/, '$1$3')
     : 'Not configured';
 
   return `<!DOCTYPE html>
