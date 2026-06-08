@@ -7,6 +7,7 @@ import {
   authInfoToOAuthRockContext,
   fetchAuth0OAuthMetadata,
   loadAuth0Config,
+  loadAuth0ManagementConfig,
 } from './oauth.js';
 
 function makeRequest(headers: Record<string, string> = {}): Request {
@@ -367,5 +368,52 @@ describe('authInfoToOAuthRockContext', () => {
     expect(ctx.request.sessionId).toMatch(/[0-9a-f-]{36}/);
     expect(ctx.request.requestId).toMatch(/[0-9a-f-]{36}/);
     expect(ctx.request.ip).toBeUndefined();
+  });
+});
+
+describe('loadAuth0ManagementConfig', () => {
+  it('returns all three values from a complete env', () => {
+    const config = loadAuth0ManagementConfig({
+      AUTH0_CLIENT_ID: 'public-client-id',
+      AUTH0_MANAGEMENT_CLIENT_ID: 'management-client-id',
+      AUTH0_MANAGEMENT_CLIENT_SECRET: 'management-client-secret',
+    });
+
+    expect(config.sharedPublicClientId).toBe('public-client-id');
+    expect(config.clientId).toBe('management-client-id');
+    expect(config.clientSecret).toBe('management-client-secret');
+  });
+
+  it('trims surrounding whitespace', () => {
+    const config = loadAuth0ManagementConfig({
+      AUTH0_CLIENT_ID: '  public-client-id  ',
+      AUTH0_MANAGEMENT_CLIENT_ID: '  management-client-id  ',
+      AUTH0_MANAGEMENT_CLIENT_SECRET: '  management-client-secret  ',
+    });
+
+    expect(config.sharedPublicClientId).toBe('public-client-id');
+    expect(config.clientId).toBe('management-client-id');
+    expect(config.clientSecret).toBe('management-client-secret');
+  });
+
+  it('throws when AUTH0_CLIENT_ID is missing', () => {
+    expect(() => loadAuth0ManagementConfig({
+      AUTH0_MANAGEMENT_CLIENT_ID: 'management-client-id',
+      AUTH0_MANAGEMENT_CLIENT_SECRET: 'management-client-secret',
+    })).toThrow('AUTH0_CLIENT_ID env var is required');
+  });
+
+  it('throws when AUTH0_MANAGEMENT_CLIENT_ID is missing', () => {
+    expect(() => loadAuth0ManagementConfig({
+      AUTH0_CLIENT_ID: 'public-client-id',
+      AUTH0_MANAGEMENT_CLIENT_SECRET: 'management-client-secret',
+    })).toThrow('AUTH0_MANAGEMENT_CLIENT_ID env var is required');
+  });
+
+  it('throws when AUTH0_MANAGEMENT_CLIENT_SECRET is missing', () => {
+    expect(() => loadAuth0ManagementConfig({
+      AUTH0_CLIENT_ID: 'public-client-id',
+      AUTH0_MANAGEMENT_CLIENT_ID: 'management-client-id',
+    })).toThrow('AUTH0_MANAGEMENT_CLIENT_SECRET env var is required');
   });
 });
