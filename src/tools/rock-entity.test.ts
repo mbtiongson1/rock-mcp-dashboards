@@ -20,16 +20,16 @@ describe('rock_entity tool', () => {
     } as unknown as OAuthRockContext;
   });
 
-  it('should handle get action and return entity', async () => {
+  it('should handle get action and return entity (non-people model)', async () => {
     mockClient.get.mockResolvedValue({ Id: 123, Name: 'Alex Santos' });
 
     const result = await rockEntityTool.handle(
-      { action: 'get', model: 'people', id: 123 },
+      { action: 'get', model: 'groups', id: 123 },
       null,
       mockCtx
     );
 
-    expect(mockClient.get).toHaveBeenCalledWith(mockCtx, '/api/v2/models/people/123');
+    expect(mockClient.get).toHaveBeenCalledWith(mockCtx, '/api/v2/models/groups/123');
     const response = JSON.parse(result.content[0].text!);
     expect(response.result.Name).toBe('Alex Santos');
   });
@@ -368,5 +368,206 @@ describe('rock_entity tool', () => {
     expect(response.ok).toBe(false);
     expect(response.error?.code).toBe('COUNT_ERROR');
     expect(response.error?.message).toContain('v2');
+  });
+
+  // Tests for get action with shape-based projection (PII filtering)
+  describe('get action with shape-based projection for people', () => {
+    it('should return privacy-safe projection for people with default shape (summary)', async () => {
+      const rawRecord = {
+        Id: 123,
+        Guid: '11111111-1111-1111-1111-111111111111',
+        IdKey: 'P123',
+        FirstName: 'John',
+        NickName: 'Johnny',
+        LastName: 'Doe',
+        Email: 'john.doe@example.com', // PII - should be excluded
+        PhoneNumber: '555-1234', // PII - should be excluded
+        BirthDate: '1980-01-15', // PII - should be excluded
+        PrimaryCampusId: 1,
+        ConnectionStatusValue: 'Member',
+      };
+
+      mockClient.get.mockResolvedValue(rawRecord);
+
+      const result = await rockEntityTool.handle(
+        { action: 'get', model: 'people', id: 123 },
+        null,
+        mockCtx
+      );
+
+      expect(mockClient.get).toHaveBeenCalledWith(mockCtx, '/api/v2/models/people/123');
+      const response = JSON.parse(result.content[0].text!);
+      expect(response.ok).toBe(true);
+
+      const projected = response.result;
+      // Should include safe fields
+      expect(projected.id).toBe(123);
+      expect(projected.guid).toBe('11111111-1111-1111-1111-111111111111');
+      expect(projected.idKey).toBe('P123');
+      expect(projected.name).toBe('Johnny Doe');
+      expect(projected.connectionStatus).toBe('Member');
+      expect(projected.campus).toBeDefined(); // campus id or name
+
+      // Should exclude PII
+      expect(projected.Email).toBeUndefined();
+      expect(projected.PhoneNumber).toBeUndefined();
+      expect(projected.BirthDate).toBeUndefined();
+      expect(projected.FirstName).toBeUndefined();
+      expect(projected.LastName).toBeUndefined();
+      expect(projected.NickName).toBeUndefined();
+    });
+
+    it('should return raw record for people with shape=full', async () => {
+      const rawRecord = {
+        Id: 123,
+        Guid: '11111111-1111-1111-1111-111111111111',
+        FirstName: 'John',
+        LastName: 'Doe',
+        Email: 'john.doe@example.com',
+        PhoneNumber: '555-1234',
+      };
+
+      mockClient.get.mockResolvedValue(rawRecord);
+
+      const result = await rockEntityTool.handle(
+        { action: 'get', model: 'people', id: 123, shape: 'full' },
+        null,
+        mockCtx
+      );
+
+      expect(mockClient.get).toHaveBeenCalledWith(mockCtx, '/api/v2/models/people/123');
+      const response = JSON.parse(result.content[0].text!);
+      expect(response.ok).toBe(true);
+
+      const unprojected = response.result;
+      // Should include all fields including PII
+      expect(unprojected.Id).toBe(123);
+      expect(unprojected.Email).toBe('john.doe@example.com');
+      expect(unprojected.PhoneNumber).toBe('555-1234');
+      expect(unprojected.FirstName).toBe('John');
+    });
+
+    it('should normalize person/persons model names to apply projection', async () => {
+      const rawRecord = {
+        Id: 456,
+        FirstName: 'Jane',
+        LastName: 'Smith',
+        Email: 'jane@example.com',
+        ConnectionStatusValue: 'Prospect',
+      };
+
+      mockClient.get.mockResolvedValue(rawRecord);
+
+      // Test with 'person' instead of 'people'
+      const result = await rockEntityTool.handle(
+        { action: 'get', model: 'person', id: 456 },
+        null,
+        mockCtx
+      );
+
+      const response = JSON.parse(result.content[0].text!);
+      expect(response.ok).toBe(true);
+      expect(response.result.Email).toBeUndefined();
+      expect(response.result.name).toBe('Jane Smith');
+    });
+
+    it('should use NickName if FirstName is not available', async () => {
+      const rawRecord = {
+        Id: 789,
+        FirstName: null,
+        NickName: 'Bobby',
+        LastName: 'Jones',
+        Email: 'bobby@example.com',
+      };
+
+      mockClient.get.mockResolvedValue(rawRecord);
+
+      const result = await rockEntityTool.handle(
+        { action: 'get', model: 'people', id: 789 },
+        null,
+        mockCtx
+      );
+
+      const response = JSON.parse(result.content[0].text!);
+      expect(response.result.name).toBe('Bobby Jones');
+    });
+
+    it('should return raw record for non-people models regardless of shape', async () => {
+      const rawRecord = {
+        Id: 999,
+        Name: 'Sample Group',
+        Description: 'This is a group',
+      };
+
+      mockClient.get.mockResolvedValue(rawRecord);
+
+      const result = await rockEntityTool.handle(
+        { action: 'get', model: 'groups', id: 999, shape: 'summary' },
+        null,
+        mockCtx
+      );
+
+      const response = JSON.parse(result.content[0].text!);
+      expect(response.ok).toBe(true);
+      expect(response.result).toEqual(rawRecord);
+    });
+
+    it('should apply projection on v1 fallback for people', async () => {
+      const rawRecord = {
+        Id: 555,
+        Guid: '22222222-2222-2222-2222-222222222222',
+        FirstName: 'Alex',
+        LastName: 'Brown',
+        Email: 'alex@example.com',
+        PhoneNumber: '555-5555',
+        ConnectionStatusValue: 'Baptized',
+      };
+
+      // v2 fails, v1 succeeds
+      mockClient.get
+        .mockRejectedValueOnce(new Error('v2 not available'))
+        .mockResolvedValueOnce(rawRecord);
+
+      const result = await rockEntityTool.handle(
+        { action: 'get', model: 'people', id: 555 },
+        null,
+        mockCtx
+      );
+
+      expect(mockClient.get).toHaveBeenNthCalledWith(1, mockCtx, '/api/v2/models/people/555');
+      expect(mockClient.get).toHaveBeenNthCalledWith(2, mockCtx, '/api/People/555');
+
+      const response = JSON.parse(result.content[0].text!);
+      expect(response.ok).toBe(true);
+      expect(response.result.Email).toBeUndefined();
+      expect(response.result.PhoneNumber).toBeUndefined();
+      expect(response.result.name).toBe('Alex Brown');
+      expect(response.result.id).toBe(555);
+      expect(response.warning).toContain('Fell back to REST v1');
+    });
+
+    it('should include campus field (id or resolved name) in projection', async () => {
+      const rawRecord = {
+        Id: 111,
+        FirstName: 'Chris',
+        LastName: 'Davis',
+        Email: 'chris@example.com',
+        PrimaryCampusId: 5,
+      };
+
+      mockClient.get.mockResolvedValue(rawRecord);
+
+      const result = await rockEntityTool.handle(
+        { action: 'get', model: 'people', id: 111 },
+        null,
+        mockCtx
+      );
+
+      const response = JSON.parse(result.content[0].text!);
+      expect(response.ok).toBe(true);
+      const projected = response.result;
+      // Should have campus field (at least the ID)
+      expect(projected.campus).toBeDefined();
+    });
   });
 });

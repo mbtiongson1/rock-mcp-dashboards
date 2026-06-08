@@ -95,6 +95,34 @@ function linqToOData(where?: string): string {
   return odata;
 }
 
+/**
+ * Normalize model name to detect if it's a people model.
+ * Returns true for 'people', 'person', or 'persons'.
+ */
+function isPeopleModel(model: string): boolean {
+  const lower = model.toLowerCase();
+  return lower === 'people' || lower === 'person' || lower === 'persons';
+}
+
+/**
+ * Project a people record to a privacy-safe summary, excluding PII.
+ * Includes: id, guid, idKey, name, campus (id), connectionStatus.
+ */
+function projectPeopleSummary(record: any): any {
+  if (!record) return null;
+
+  const projected: any = {
+    id: record.Id,
+    guid: record.Guid,
+    idKey: record.IdKey,
+    name: `${record.NickName || record.FirstName || ''} ${record.LastName || ''}`.trim(),
+    connectionStatus: record.ConnectionStatusValue,
+    campus: record.PrimaryCampusId || record.CampusId,
+  };
+
+  return projected;
+}
+
 export const rockEntityTool: GatewayTool = {
   name: 'rock_entity',
   title: 'Rock Entity Client',
@@ -116,15 +144,23 @@ export const rockEntityTool: GatewayTool = {
     }
 
     if (parsed.action === 'get') {
-      const { model, id } = parsed;
+      const { model, id, shape } = parsed;
       try {
-        const result = await rockClient.get(ctx, `/api/v2/models/${model}/${id}`);
+        let result = await rockClient.get(ctx, `/api/v2/models/${model}/${id}`);
+        // Apply privacy projection for people models with summary shape
+        if (isPeopleModel(model) && shape === 'summary') {
+          result = projectPeopleSummary(result);
+        }
         return formatResponse(parsed.action, ctx, result);
       } catch (_err) {
         // Fall back to REST v1
         try {
           const v1Path = getRestV1Path(model);
-          const result = await rockClient.get(ctx, `/api/${v1Path}/${id}`);
+          let result = await rockClient.get(ctx, `/api/${v1Path}/${id}`);
+          // Apply privacy projection for people models with summary shape
+          if (isPeopleModel(model) && shape === 'summary') {
+            result = projectPeopleSummary(result);
+          }
           return formatResponse(parsed.action, ctx, result, undefined, 'Fell back to REST v1');
         } catch (v1Err: any) {
           return formatResponse(parsed.action, ctx, null, {
