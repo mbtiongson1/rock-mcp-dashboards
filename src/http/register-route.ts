@@ -113,7 +113,7 @@ export async function handleRegisterPost(
         return jsonCors(
           {
             error: 'invalid_redirect_uri',
-            error_description: `Invalid or disallowed redirect_uri: ${uri}`,
+            error_description: 'One or more redirect_uris are invalid or disallowed (must be HTTPS, or HTTP only for loopback)',
           },
           { status: 400 }
         );
