@@ -103,7 +103,7 @@ describe('rock_entity tool', () => {
 
     expect(mockClient.post).toHaveBeenCalledWith(
       mockCtx,
-      '/api/v2/EntitySearch/CoreMembers',
+      '/api/v2/models/entitysearches/search/CoreMembers',
       expect.objectContaining({
         Status: 'Active',
         Offset: 0,
@@ -161,7 +161,7 @@ describe('rock_entity tool', () => {
 
     expect(mockClient.post).toHaveBeenCalledWith(
       mockCtx,
-      '/api/v2/EntitySearch/ActiveMembers',
+      '/api/v2/models/entitysearches/search/ActiveMembers',
       expect.objectContaining({
         Offset: 0,
         Limit: 1000,
@@ -568,6 +568,50 @@ describe('rock_entity tool', () => {
       const projected = response.result;
       // Should have campus field (at least the ID)
       expect(projected.campus).toBeDefined();
+    });
+  });
+
+  describe('searchByKey error handling', () => {
+    it('should handle searchByKey failure when v2 access is denied', async () => {
+      mockClient.post.mockRejectedValue(new Error('Rock API error (401 ): Unauthorized'));
+
+      const result = await rockEntityTool.handle(
+        {
+          action: 'searchByKey',
+          searchKey: 'SomeSearch',
+          refinements: {},
+          offset: 0,
+          limit: 100,
+        },
+        null,
+        mockCtx
+      );
+
+      const response = JSON.parse(result.content[0].text!);
+      expect(response.ok).toBe(false);
+      expect(response.error.code).toBe('SEARCH_BY_KEY_ERROR');
+      expect(response.error.message).toContain('REST v2 access');
+    });
+  });
+
+  describe('count with searchKey error handling', () => {
+    it('should handle count with searchKey failure when v2 access is denied', async () => {
+      mockClient.post.mockRejectedValue(new Error('Rock API error (401 ): Unauthorized'));
+
+      const result = await rockEntityTool.handle(
+        {
+          action: 'count',
+          model: 'people',
+          searchKey: 'SomeSearch',
+        },
+        null,
+        mockCtx
+      );
+
+      const response = JSON.parse(result.content[0].text!);
+      expect(response.ok).toBe(false);
+      expect(response.error.code).toBe('COUNT_ERROR');
+      expect(response.error.message).toContain('REST v2 access');
     });
   });
 });

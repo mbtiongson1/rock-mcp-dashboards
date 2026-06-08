@@ -215,4 +215,80 @@ describe('DiscoveryService', () => {
     expect(map.attributes.personAgeGroup.length).toBeGreaterThan(0);
     expect(map.attributes.fluroId.length).toBeGreaterThan(0);
   });
+
+  it('should handle entity search discovery failure when v2 access is denied (401)', async () => {
+    mockClient.get = vi.fn().mockResolvedValue({ Version: '17.7' } as any);
+    mockClient.post = vi.fn().mockImplementation(async (_ctx, path, _body) => {
+      if (path.includes('/campuses/search')) {
+        return [{ Id: 1, Name: 'Manila', Guid: 'g-manila' }];
+      }
+      if (path.includes('/grouptypes/search')) {
+        return [];
+      }
+      if (path.includes('/attributes/search')) {
+        return [];
+      }
+      if (path.includes('/entitysearches/search')) {
+        throw new Error('Rock API error (401 ): ');
+      }
+      if (path.includes('/workflowtypes/search')) {
+        return [];
+      }
+      if (path.includes('/connectiontypes/search')) {
+        return [];
+      }
+      return [];
+    });
+
+    const map = await service.getMap(mockCtx);
+    expect(map.entitySearches).toHaveLength(0);
+    expect(map.warnings.some(w => w.includes('entity search discovery requires REST v2 access'))).toBe(true);
+  });
+
+  it('should emit precise warning when entity search discovery fails', async () => {
+    mockClient.get = vi.fn().mockResolvedValue({ Version: '17.7' } as any);
+    mockClient.post = vi.fn().mockImplementation(async (_ctx, path, _body) => {
+      if (path.includes('/campuses/search')) {
+        return [{ Id: 1, Name: 'Manila', Guid: 'g-manila' }];
+      }
+      if (path.includes('/entitysearches/search')) {
+        throw new Error('Rock API error (401 ): Unauthorized');
+      }
+      return [];
+    });
+
+    const map = await service.getMap(mockCtx);
+    const entitySearchWarnings = map.warnings.filter(w => w.toLowerCase().includes('entity search'));
+    expect(entitySearchWarnings.length).toBeGreaterThan(0);
+    expect(entitySearchWarnings[0]).toContain('REST v2 access');
+  });
+
+  it('should handle entity search discovery failure when a non-401 error occurs', async () => {
+    mockClient.get = vi.fn().mockResolvedValue({ Version: '17.7' } as any);
+    mockClient.post = vi.fn().mockImplementation(async (_ctx, path, _body) => {
+      if (path.includes('/campuses/search')) {
+        return [{ Id: 1, Name: 'Manila', Guid: 'g-manila' }];
+      }
+      if (path.includes('/grouptypes/search')) {
+        return [];
+      }
+      if (path.includes('/attributes/search')) {
+        return [];
+      }
+      if (path.includes('/entitysearches/search')) {
+        throw new Error('Rock API error (404 Not Found): Not found');
+      }
+      if (path.includes('/workflowtypes/search')) {
+        return [];
+      }
+      if (path.includes('/connectiontypes/search')) {
+        return [];
+      }
+      return [];
+    });
+
+    const map = await service.getMap(mockCtx);
+    expect(map.entitySearches).toHaveLength(0);
+    expect(map.warnings.some(w => w.includes('failed to discover entity searches') && w.includes('v2 access required'))).toBe(true);
+  });
 });

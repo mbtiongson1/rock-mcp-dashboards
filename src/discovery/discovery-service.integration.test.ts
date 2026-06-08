@@ -35,4 +35,5 @@ describe('DiscoveryService Integration Test', () => {
     const totalGroupTypes = map.groupTypes.connectGroups.length + map.groupTypes.ministryTeams.length + map.groupTypes.other.length;
     expect(totalGroupTypes).toBeGreaterThan(0);
   }, 15000);
+
 });

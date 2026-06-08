@@ -301,6 +301,12 @@ export class DiscoveryService {
     }
 
     // Discover Entity Searches
+    // Note (Rock v17.7): All entity search routes are gated behind REST v2 access.
+    // Candidates attempted:
+    //   - POST /api/v2/models/entitysearches/search (returns 401 if key lacks v2 permissions)
+    //   - GET /api/EntitySearches (404 - route does not exist in v17.7)
+    //   - Other v2/v1 variants (all 404 or 401)
+    // If v2 access is available, the search endpoint works; otherwise, discovery returns empty.
     let entitySearches: DiscoveryCandidate[] = [];
     try {
       const searchList = await this.rockClient.post<any[]>(ctx, '/api/v2/models/entitysearches/search', {});
@@ -313,21 +319,15 @@ export class DiscoveryService {
         confidence: 0.9,
         signals: ['discovered entity search'],
       }));
-    } catch (_err) {
-      // Fall back to REST v1
-      try {
-        const searchList = await this.rockClient.get<any[]>(ctx, '/api/EntitySearches');
-        entitySearches = searchList.map(s => ({
-          kind: 'entitySearch',
-          id: s.Id,
-          guid: s.Guid,
-          idKey: s.Key,
-          name: s.Name || s.Key || '',
-          confidence: 0.9,
-          signals: ['discovered entity search via REST v1 fallback'],
-        }));
-      } catch (err: any) {
-        warnings.push(`failed to discover entity searches: ${err.message}`);
+    } catch (err: any) {
+      // No v1 fallback exists; v17.7 EntitySearches route returns 404.
+      // Only way to list entity searches is via v2 with proper REST v2 access.
+      const statusMatch = err.message.match(/\((\d+)[\s)]/);
+      const status = statusMatch ? parseInt(statusMatch[1], 10) : 0;
+      if (status === 401) {
+        warnings.push('entity search discovery requires REST v2 access (API key currently returns 401 on v2 endpoints)');
+      } else {
+        warnings.push(`failed to discover entity searches (v2 access required; error: ${err.message})`);
       }
     }
 
