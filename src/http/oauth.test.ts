@@ -1,16 +1,17 @@
 import * as crypto from 'crypto';
 import { describe, it, expect, vi } from 'vitest';
-import type { Request, Response } from 'express';
 import { InvalidTokenError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
 import {
   Auth0OAuthTokenVerifier,
   authInfoToOAuthRockContext,
-  createAuthMiddleware,
-  createOAuthContextAdapterMiddleware,
   fetchAuth0OAuthMetadata,
   loadAuth0Config,
 } from './oauth.js';
+
+function makeRequest(headers: Record<string, string> = {}): Request {
+  return new Request('https://mcp.example.com/mcp', { method: 'POST', headers });
+}
 
 describe('Auth0 OAuth config', () => {
   it('loads Auth0 env vars and normalizes URLs', () => {
@@ -281,8 +282,8 @@ describe('Auth0OAuthTokenVerifier', () => {
   });
 });
 
-describe('OAuth context adapter', () => {
-  it('maps SDK req.auth into OAuthRockContext without enumerating the raw token', async () => {
+describe('authInfoToOAuthRockContext', () => {
+  it('maps SDK AuthInfo into OAuthRockContext without enumerating the raw token', () => {
     const auth: AuthInfo = {
       token: 'raw-access-token',
       clientId: 'client-123',
@@ -295,36 +296,26 @@ describe('OAuth context adapter', () => {
         iss: 'https://favor.us.auth0.com/',
       },
     };
-    const req = {
-      auth,
-      headers: {
-        'x-mcp-session-id': 'session-123',
-        'x-request-id': 'request-123',
-        'user-agent': 'vitest',
-      },
-      ip: '203.0.113.10',
-      socket: { remoteAddress: '192.0.2.1' },
-    } as unknown as Request & { oauthContext?: any };
-    const res = {
-      status: vi.fn().mockReturnThis(),
-      json: vi.fn(),
-    } as unknown as Response;
-    const next = vi.fn();
+    const req = makeRequest({
+      'x-mcp-session-id': 'session-123',
+      'x-request-id': 'request-123',
+      'user-agent': 'vitest',
+      'x-forwarded-for': '203.0.113.10, 70.41.3.18',
+    });
 
-    await createOAuthContextAdapterMiddleware()(req, res, next);
+    const ctx = authInfoToOAuthRockContext(auth, req);
 
-    expect(next).toHaveBeenCalled();
-    expect(req.oauthContext.oauth).toEqual({
+    expect(ctx.oauth).toEqual({
       subject: 'auth0|123',
       email: 'rico@example.com',
       name: 'Rico',
       issuer: 'https://favor.us.auth0.com/',
       accessTokenHash: crypto.createHash('sha256').update('raw-access-token').digest('hex'),
     });
-    expect(req.oauthContext.scopes).toEqual(new Set(['read', 'write']));
-    expect(req.oauthContext.rockUserToken).toBe('raw-access-token');
-    expect(JSON.stringify(req.oauthContext)).not.toContain('raw-access-token');
-    expect(req.oauthContext.request).toEqual({
+    expect(ctx.scopes).toEqual(new Set(['read', 'write']));
+    expect(ctx.rockUserToken).toBe('raw-access-token');
+    expect(JSON.stringify(ctx)).not.toContain('raw-access-token');
+    expect(ctx.request).toEqual({
       sessionId: 'session-123',
       requestId: 'request-123',
       ip: '203.0.113.10',
@@ -343,43 +334,8 @@ describe('OAuth context adapter', () => {
         iss: 'https://favor.us.auth0.com/',
       },
     };
-    const req = {
-      auth,
-      headers: {},
-      socket: {},
-    } as unknown as Request;
 
-    expect(() => authInfoToOAuthRockContext(auth, req)).toThrow(/subject/i);
-  });
-
-  it('passes adapter errors to Express when AuthInfo is missing extra.sub', async () => {
-    const auth: AuthInfo = {
-      token: 'raw-access-token',
-      clientId: 'client-123',
-      scopes: ['read'],
-      extra: {
-        email: 'rico@example.com',
-        name: 'Rico',
-        iss: 'https://favor.us.auth0.com/',
-      },
-    };
-    const req = {
-      auth,
-      headers: {},
-      socket: {},
-    } as unknown as Request & { oauthContext?: any };
-    const res = {
-      status: vi.fn().mockReturnThis(),
-      json: vi.fn(),
-    } as unknown as Response;
-    const next = vi.fn();
-
-    await createOAuthContextAdapterMiddleware()(req, res, next);
-
-    expect(next).toHaveBeenCalledWith(expect.any(Error));
-    expect(req.oauthContext).toBeUndefined();
-    expect(res.status).not.toHaveBeenCalled();
-    expect(res.json).not.toHaveBeenCalled();
+    expect(() => authInfoToOAuthRockContext(auth, makeRequest())).toThrow(/subject/i);
   });
 
   it('rejects AuthInfo with whitespace-only extra.sub even when clientId is present', () => {
@@ -394,165 +350,22 @@ describe('OAuth context adapter', () => {
         iss: 'https://favor.us.auth0.com/',
       },
     };
-    const req = {
-      auth,
-      headers: {},
-      socket: {},
-    } as unknown as Request;
 
-    expect(() => authInfoToOAuthRockContext(auth, req)).toThrow(/subject/i);
-  });
-});
-
-describe('OAuth Middleware', () => {
-  it('should return 401 when Authorization header is missing', async () => {
-    const middleware = createAuthMiddleware({
-      verifyToken: async () => ({ isValid: false, error: 'Missing token' }),
-    });
-
-    const req = { headers: {} } as unknown as Request;
-    const res = {
-      status: vi.fn().mockReturnThis(),
-      json: vi.fn(),
-    } as unknown as Response;
-    const next = vi.fn();
-
-    await middleware(req, res, next);
-
-    expect(res.status).toHaveBeenCalledWith(401);
-    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: expect.any(String) }));
-    expect(next).not.toHaveBeenCalled();
+    expect(() => authInfoToOAuthRockContext(auth, makeRequest())).toThrow(/subject/i);
   });
 
-  it('should return 403 when read scope is missing', async () => {
-    const middleware = createAuthMiddleware({
-      verifyToken: async () => ({
-        isValid: true,
-        payload: { sub: 'user123', scope: 'other' }
-      }),
-    });
+  it('generates session and request IDs when headers are absent', () => {
+    const auth: AuthInfo = {
+      token: 'raw-access-token',
+      clientId: 'client-123',
+      scopes: ['read'],
+      extra: { sub: 'auth0|123' },
+    };
 
-    const req = { headers: { authorization: 'Bearer token' } } as unknown as Request;
-    const res = {
-      status: vi.fn().mockReturnThis(),
-      json: vi.fn(),
-    } as unknown as Response;
-    const next = vi.fn();
+    const ctx = authInfoToOAuthRockContext(auth, makeRequest());
 
-    await middleware(req, res, next);
-
-    expect(res.status).toHaveBeenCalledWith(403);
-    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: 'Missing required read scope' }));
-    expect(next).not.toHaveBeenCalled();
-  });
-
-  it('should succeed and attach oauthContext when token and read scope are valid', async () => {
-    const middleware = createAuthMiddleware({
-      verifyToken: async () => ({
-        isValid: true,
-        payload: { sub: 'user123', scope: 'read write', email: 'test@example.com' }
-      }),
-    });
-
-    const req = {
-      headers: { authorization: 'Bearer token' },
-      ip: '127.0.0.1',
-      headers_info: { 'user-agent': 'vitest' }
-    } as unknown as Request & { oauthContext?: any };
-    
-    const res = {
-      status: vi.fn().mockReturnThis(),
-      json: vi.fn(),
-    } as unknown as Response;
-    const next = vi.fn();
-
-    await middleware(req, res, next);
-
-    expect(next).toHaveBeenCalled();
-    expect(req.oauthContext).toBeDefined();
-    expect(req.oauthContext.oauth.subject).toBe('user123');
-    expect(req.oauthContext.scopes).toContain('read');
-    expect(req.oauthContext.scopes).toContain('write');
-  });
-
-  it('should trim valid token subjects before attaching oauthContext', async () => {
-    const middleware = createAuthMiddleware({
-      verifyToken: async () => ({
-        isValid: true,
-        payload: { sub: '  user123  ', scope: 'read', email: 'test@example.com' }
-      }),
-    });
-
-    const req = {
-      headers: { authorization: 'Bearer token' },
-      ip: '127.0.0.1',
-    } as unknown as Request & { oauthContext?: any };
-
-    const res = {
-      status: vi.fn().mockReturnThis(),
-      json: vi.fn(),
-    } as unknown as Response;
-    const next = vi.fn();
-
-    await middleware(req, res, next);
-
-    expect(next).toHaveBeenCalled();
-    expect(req.oauthContext.oauth.subject).toBe('user123');
-  });
-
-  it('should return 401 when token has read scope but no subject', async () => {
-    const middleware = createAuthMiddleware({
-      verifyToken: async () => ({
-        isValid: true,
-        payload: { scope: 'read write', email: 'test@example.com' }
-      }),
-    });
-
-    const req = {
-      headers: { authorization: 'Bearer token' },
-      ip: '127.0.0.1',
-      headers_info: { 'user-agent': 'vitest' }
-    } as unknown as Request & { oauthContext?: any };
-
-    const res = {
-      status: vi.fn().mockReturnThis(),
-      json: vi.fn(),
-    } as unknown as Response;
-    const next = vi.fn();
-
-    await middleware(req, res, next);
-
-    expect(res.status).toHaveBeenCalledWith(401);
-    expect(res.json).toHaveBeenCalledWith({ error: 'Invalid token subject' });
-    expect(next).not.toHaveBeenCalled();
-    expect(req.oauthContext).toBeUndefined();
-  });
-
-  it('should return 401 when token has read scope but whitespace-only subject', async () => {
-    const middleware = createAuthMiddleware({
-      verifyToken: async () => ({
-        isValid: true,
-        payload: { sub: '   ', scope: 'read write', email: 'test@example.com' }
-      }),
-    });
-
-    const req = {
-      headers: { authorization: 'Bearer token' },
-      ip: '127.0.0.1',
-      headers_info: { 'user-agent': 'vitest' }
-    } as unknown as Request & { oauthContext?: any };
-
-    const res = {
-      status: vi.fn().mockReturnThis(),
-      json: vi.fn(),
-    } as unknown as Response;
-    const next = vi.fn();
-
-    await middleware(req, res, next);
-
-    expect(res.status).toHaveBeenCalledWith(401);
-    expect(res.json).toHaveBeenCalledWith({ error: 'Invalid token subject' });
-    expect(next).not.toHaveBeenCalled();
-    expect(req.oauthContext).toBeUndefined();
+    expect(ctx.request.sessionId).toMatch(/[0-9a-f-]{36}/);
+    expect(ctx.request.requestId).toMatch(/[0-9a-f-]{36}/);
+    expect(ctx.request.ip).toBeUndefined();
   });
 });

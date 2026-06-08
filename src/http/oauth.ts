@@ -1,15 +1,12 @@
 import * as crypto from 'crypto';
 import * as jose from 'jose';
-import type { Request, RequestHandler } from 'express';
 import type { OAuthMetadata } from '@modelcontextprotocol/sdk/shared/auth.js';
 import type { OAuthTokenVerifier } from '@modelcontextprotocol/sdk/server/auth/provider.js';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
 import { InvalidTokenError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
 
-export { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
 export {
   getOAuthProtectedResourceMetadataUrl,
-  mcpAuthMetadataRouter,
 } from '@modelcontextprotocol/sdk/server/auth/router.js';
 
 export interface OAuthRockContext {
@@ -38,20 +35,6 @@ export interface OAuthRockContext {
     ip?: string;
     userAgent?: string;
   };
-}
-
-// Extend Request type to include our oauthContext
-declare global {
-  // eslint-disable-next-line @typescript-eslint/no-namespace
-  namespace Express {
-    interface Request {
-      oauthContext?: OAuthRockContext;
-    }
-  }
-}
-
-export interface VerifyTokenOptions {
-  verifyToken?: (token: string) => Promise<{ isValid: boolean; payload?: any; error?: string }>;
 }
 
 export interface Auth0OAuthConfig {
@@ -235,134 +218,13 @@ export function authInfoToOAuthRockContext(authInfo: AuthInfo, req: Request): OA
     request: {
       sessionId: headerValue(req, 'x-mcp-session-id') || headerValue(req, 'x-session-id') || crypto.randomUUID(),
       requestId: headerValue(req, 'x-request-id') || crypto.randomUUID(),
-      ip: req.ip || req.socket?.remoteAddress,
+      ip: clientIpFromHeaders(req),
       userAgent: headerValue(req, 'user-agent'),
     },
   };
 
   attachRawToken(ctx, token);
   return ctx;
-}
-
-export function createOAuthContextAdapterMiddleware(): RequestHandler {
-  return (req, _res, next) => {
-    const authInfo = (req as Request & { auth?: AuthInfo }).auth;
-    if (!authInfo) {
-      next(new Error('OAuth auth info not initialized'));
-      return;
-    }
-
-    try {
-      req.oauthContext = authInfoToOAuthRockContext(authInfo, req);
-      next();
-    } catch (err) {
-      next(err);
-    }
-  };
-}
-
-export function createAuthMiddleware(options: VerifyTokenOptions = {}) {
-  const verifyToken = options.verifyToken || defaultVerifyToken;
-
-  return async (req: any, res: any, next: any): Promise<void> => {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      res.status(401).json({ error: 'Missing or invalid Authorization header' });
-      return;
-    }
-
-    const token = authHeader.substring(7);
-    try {
-      const { isValid, payload, error } = await verifyToken(token);
-      if (!isValid || !payload) {
-        res.status(401).json({ error: error || 'Invalid token' });
-        return;
-      }
-
-      // Check required read scope
-      const scopeStr = payload.scope || '';
-      const scopes = new Set<string>(scopeStr.split(/\s+/).filter(Boolean));
-      if (!scopes.has('read')) {
-        res.status(403).json({ error: 'Missing required read scope' });
-        return;
-      }
-
-      const mcpScopes = new Set<'read' | 'write'>();
-      if (scopes.has('read')) mcpScopes.add('read');
-      if (scopes.has('write')) mcpScopes.add('write');
-
-      const subject = typeof payload.sub === 'string' && payload.sub.trim().length > 0
-        ? payload.sub.trim()
-        : undefined;
-      if (!subject) {
-        res.status(401).json({ error: 'Invalid token subject' });
-        return;
-      }
-
-      // Create session ID and request ID
-      const sessionId = req.headers['x-mcp-session-id'] as string || crypto.randomUUID();
-      const requestId = crypto.randomUUID();
-      const ip = req.ip || req.socket.remoteAddress;
-      const userAgent = req.headers['user-agent'];
-
-      // Generate access token hash for audit metadata
-      const accessTokenHash = crypto.createHash('sha256').update(token).digest('hex');
-
-      // Build context
-      req.oauthContext = {
-        endpoint: 'mcp', // default, resolved later
-        mode: 'readonly', // default, resolved later
-        scopes: mcpScopes,
-        oauth: {
-          subject,
-          email: payload.email,
-          name: payload.name,
-          accessTokenHash,
-          issuer: payload.iss,
-        },
-        rockUser: {
-          isRsrAdmin: false, // default, resolved later
-        },
-        request: {
-          sessionId,
-          requestId,
-          ip,
-          userAgent,
-        },
-      };
-      attachRawToken(req.oauthContext, token);
-
-      next();
-    } catch (err: any) {
-      res.status(401).json({ error: err.message || 'Authentication failed' });
-    }
-  };
-}
-
-async function defaultVerifyToken(token: string) {
-  const jwksUrl = process.env.OAUTH_JWKS_URL;
-  const issuer = process.env.OAUTH_ISSUER;
-  const audience = process.env.OAUTH_AUDIENCE;
-
-  if (!jwksUrl) {
-    // In local dev without config, decode but warn or allow in development
-    if (process.env.NODE_ENV !== 'production') {
-      const decoded = jose.decodeJwt(token);
-      return { isValid: true, payload: decoded };
-    }
-    return { isValid: false, error: 'OAUTH_JWKS_URL env var is not configured' };
-  }
-
-  try {
-    const JWKS = jose.createRemoteJWKSet(new URL(jwksUrl));
-    const { payload } = await jose.jwtVerify(token, JWKS, {
-      issuer,
-      audience,
-    });
-    return { isValid: true, payload };
-  } catch (err: any) {
-    return { isValid: false, error: err.message };
-  }
 }
 
 function firstEnvValue(env: OAuthEnv, keys: string[]): string | undefined {
@@ -480,11 +342,19 @@ function extractScopes(claims: Record<string, unknown>): string[] {
 }
 
 function headerValue(req: Request, name: string): string | undefined {
-  const value = req.headers[name.toLowerCase()];
-  if (Array.isArray(value)) {
-    return value[0];
+  const value = req.headers.get(name);
+  return value === null ? undefined : value;
+}
+
+function clientIpFromHeaders(req: Request): string | undefined {
+  const forwarded = req.headers.get('x-forwarded-for');
+  if (forwarded) {
+    const first = forwarded.split(',')[0]?.trim();
+    if (first) {
+      return first;
+    }
   }
-  return value;
+  return req.headers.get('x-real-ip') ?? undefined;
 }
 
 function attachRawToken(ctx: OAuthRockContext, token: string): void {
