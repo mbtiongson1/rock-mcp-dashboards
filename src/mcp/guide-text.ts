@@ -7,12 +7,23 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export function getRockGuideText(mode: McpMode): string {
-  try {
-    const filename = mode === 'readwrite' ? 'rock-usage-readwrite.md' : 'rock-usage-readonly.md';
-    const filePath = path.resolve(__dirname, '../../static/mcp-guides', filename);
-    return fs.readFileSync(filePath, 'utf8');
-  } catch (err: any) {
-    // Fallback if files aren't found (e.g. in certain test environments)
-    return `Favor Church Rock MCP Guide (${mode} mode). Use rock_lookup when mapping is unknown.`;
+  const filename = mode === 'readwrite' ? 'rock-usage-readwrite.md' : 'rock-usage-readonly.md';
+  // Try the source-relative path (stdio/tsc build) first, then a path relative
+  // to the process working directory (Next.js serverless functions run from the
+  // project root with `static/` traced in via outputFileTracingIncludes).
+  const candidates = [
+    path.resolve(__dirname, '../../static/mcp-guides', filename),
+    path.join(process.cwd(), 'static/mcp-guides', filename),
+  ];
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate)) {
+        return fs.readFileSync(candidate, 'utf8');
+      }
+    } catch {
+      // try next candidate
+    }
   }
+  // Fallback if files aren't found (e.g. in certain test environments)
+  return `Favor Church Rock MCP Guide (${mode} mode). Use rock_lookup when mapping is unknown.`;
 }

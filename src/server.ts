@@ -1,4 +1,3 @@
-import { createApp } from './http/app.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { allTools } from './tools/index.js';
@@ -105,14 +104,11 @@ if (isStdio) {
     process.exit(1);
   });
 } else {
-  const app = await createApp();
-  const port = process.env.PORT || 8787;
-
-  app.listen(port, () => {
-    console.log(`Rock MCP Server listening over HTTP on port ${port}`);
-    console.log(`Endpoints:`);
-    console.log(`  POST http://localhost:${port}/mcp`);
-    console.log(`  POST http://localhost:${port}/mcp/readonly`);
-    console.log(`  POST http://localhost:${port}/mcp/readwrite`);
-  });
+  // The HTTP transport is served by Next.js App Router route handlers
+  // (app/mcp/**). Run `next dev` (or `next start` in production) instead.
+  console.error(
+    'Rock MCP HTTP transport is served by Next.js. Run `pnpm dev` (next dev) ' +
+      'or `pnpm start` (next start). For the local stdio transport, pass --stdio.'
+  );
+  process.exit(1);
 }
