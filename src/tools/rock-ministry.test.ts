@@ -187,6 +187,71 @@ describe('rock_ministry tool', () => {
     expect(response.error.code).toBe('NO_GROUP_TYPE');
   });
 
+  it('connectGroupHealth should bypass discovery when groupTypeId is provided', async () => {
+    // Mock groups and members for the overridden group type 99
+    mockClient.post.mockResolvedValueOnce([
+      { Id: 60, Name: 'Manila Connect Group', GroupTypeId: 99, IsActive: true },
+    ]);
+    mockClient.post.mockResolvedValueOnce([
+      { Id: 5001, PersonId: 501, GroupRole: { Name: 'Leader', IsLeader: true } },
+      { Id: 5002, PersonId: 502, GroupRole: { Name: 'Member', IsLeader: false } },
+    ]);
+
+    const result = await rockMinistryTool.handle(
+      { action: 'connectGroupHealth', groupTypeId: 99 },
+      null,
+      mockCtx
+    );
+
+    // Discovery service should NOT have been called since groupTypeId was pinned
+    expect(mockDiscoveryService.getMap).not.toHaveBeenCalled();
+
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.ok).toBe(true);
+
+    // The WHERE clause should use the pinned group type id (99), not the discovered one (10)
+    const firstPostCall = mockClient.post.mock.calls[0];
+    expect(firstPostCall[2].Where).toContain('GroupTypeId == 99');
+
+    // discovery should reflect the override source, not a discovered name/confidence
+    expect(response.result.discovery.connectGroupType.source).toBe('override');
+    expect(response.result.discovery.connectGroupType.id).toBe(99);
+    // No low-confidence warning should be present
+    expect(response.result.discovery.warning).toBeUndefined();
+  });
+
+  it('connectGroupHealth should surface a low-confidence warning when confidence < 0.7', async () => {
+    // Set up a discovery map with a low-confidence type
+    mockDiscoveryService.getMap.mockResolvedValueOnce({
+      groupTypes: {
+        connectGroups: [{ id: 10, name: 'Connect Group Section', confidence: 0.35 }],
+        ministryTeams: [],
+      },
+      campuses: [],
+    });
+
+    mockClient.post.mockResolvedValueOnce([
+      { Id: 70, Name: 'Test Group', GroupTypeId: 10, IsActive: true },
+    ]);
+    mockClient.post.mockResolvedValueOnce([
+      { Id: 6001, PersonId: 601, GroupRole: { Name: 'Member', IsLeader: false } },
+    ]);
+
+    const result = await rockMinistryTool.handle(
+      { action: 'connectGroupHealth' },
+      null,
+      mockCtx
+    );
+
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.ok).toBe(true);
+    expect(response.result.discovery.connectGroupType.confidence).toBe(0.35);
+    // Warning should be present
+    expect(typeof response.result.discovery.warning).toBe('string');
+    expect(response.result.discovery.warning).toContain('low confidence');
+    expect(response.result.discovery.warning).toContain('groupTypeId');
+  });
+
   it('addOrUpdateGroupMember should return ROLE_UNRESOLVED when no roleId and role cannot be resolved', async () => {
     mockCtx.mode = 'readwrite';
     mockCtx.scopes = new Set(['read', 'write']);

@@ -29,6 +29,7 @@ const rockMinistrySchema = z.discriminatedUnion('action', [
     campus: z.string().optional(),
     ageGroup: z.string().optional(),
     windowWeeks: z.number().default(12),
+    groupTypeId: z.coerce.number().optional(),
   }),
   z.object({
     action: z.literal('addOrUpdateGroupMember'),
@@ -93,6 +94,7 @@ export const rockMinistryTool: GatewayTool = {
           campus: z.string().optional(),
           ageGroup: z.string().optional(),
           windowWeeks: z.number().default(12),
+          groupTypeId: z.coerce.number().optional(),
         }),
       ]);
     }
@@ -187,32 +189,63 @@ export const rockMinistryTool: GatewayTool = {
     }
 
     if (parsed.action === 'connectGroupHealth') {
-      const { campus, ageGroup, windowWeeks } = parsed;
+      const { campus, ageGroup, windowWeeks, groupTypeId: groupTypeIdOverride } = parsed;
       const discoveryService = (ctx as any).discoveryService;
 
       try {
-        if (!discoveryService) {
-          return formatResponse(parsed.action, ctx, null, {
-            code: 'DISCOVERY_UNAVAILABLE',
-            message: 'Discovery service is not available for group type resolution.',
-          });
+        // Track how the group type was resolved for the response
+        let connectGroupTypeId: number;
+        let discoveryInfo: any;
+        let map: any;
+
+        if (groupTypeIdOverride !== undefined) {
+          // Caller pinned the group type — skip discovery entirely
+          connectGroupTypeId = groupTypeIdOverride;
+          discoveryInfo = { connectGroupType: { id: connectGroupTypeId, source: 'override' } };
+
+          // Still need map for campus lookup if campus is provided
+          if (campus && discoveryService) {
+            try {
+              map = await discoveryService.getMap(ctx);
+            } catch {
+              // Ignore — campus filter will be skipped
+            }
+          }
+        } else {
+          // Auto-discover the group type
+          if (!discoveryService) {
+            return formatResponse(parsed.action, ctx, null, {
+              code: 'DISCOVERY_UNAVAILABLE',
+              message: 'Discovery service is not available for group type resolution.',
+            });
+          }
+
+          map = await discoveryService.getMap(ctx);
+
+          // Resolve Connect Group type
+          if (!map.groupTypes.connectGroups || map.groupTypes.connectGroups.length === 0) {
+            return formatResponse(parsed.action, ctx, null, {
+              code: 'NO_GROUP_TYPE',
+              message: 'No Connect Group type discovered. Please configure connect groups in Rock RMS.',
+            });
+          }
+
+          const discovered = map.groupTypes.connectGroups[0];
+          connectGroupTypeId = discovered.id;
+          discoveryInfo = {
+            connectGroupType: {
+              name: discovered.name,
+              confidence: discovered.confidence,
+            },
+          };
+          if (discovered.confidence < 0.7) {
+            discoveryInfo.warning = `Connect group type resolved with low confidence (${discovered.confidence}); results may reflect the wrong group type. Pass groupTypeId to pin it.`;
+          }
         }
-
-        const map = await discoveryService.getMap(ctx);
-
-        // Resolve Connect Group type
-        if (!map.groupTypes.connectGroups || map.groupTypes.connectGroups.length === 0) {
-          return formatResponse(parsed.action, ctx, null, {
-            code: 'NO_GROUP_TYPE',
-            message: 'No Connect Group type discovered. Please configure connect groups in Rock RMS.',
-          });
-        }
-
-        const connectGroupTypeId = map.groupTypes.connectGroups[0].id;
 
         // Resolve campus ID if provided
         let campusId: number | null = null;
-        if (campus) {
+        if (campus && map) {
           const matchedCampus = map.campuses.find((c: any) => c.name.toLowerCase().includes(campus.toLowerCase()));
           if (matchedCampus) {
             campusId = matchedCampus.id;
@@ -356,12 +389,7 @@ export const rockMinistryTool: GatewayTool = {
         if (datasetId) {
           response.datasetId = datasetId;
         }
-        response.discovery = {
-          connectGroupType: {
-            name: map.groupTypes.connectGroups[0].name,
-            confidence: map.groupTypes.connectGroups[0].confidence,
-          },
-        };
+        response.discovery = discoveryInfo;
 
         return formatResponse(parsed.action, ctx, response);
       } catch (err: any) {
