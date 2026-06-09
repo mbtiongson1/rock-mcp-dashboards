@@ -31,6 +31,12 @@ const rockMinistrySchema = z.discriminatedUnion('action', [
     windowWeeks: z.coerce.number().default(12),
   }),
   z.object({
+    action: z.literal('leaderCount'),
+    campusId: z.coerce.number().optional(), // omit = all campuses
+    groupTypeId: z.coerce.number().optional(), // override connect-group type; else discover
+    ageGroupBreakdown: z.coerce.boolean().default(false),
+  }),
+  z.object({
     action: z.literal('addOrUpdateGroupMember'),
     groupId: z.coerce.number(),
     personId: z.coerce.number(),
@@ -93,6 +99,12 @@ export const rockMinistryTool: GatewayTool = {
           campus: z.string().optional(),
           ageGroup: z.string().optional(),
           windowWeeks: z.coerce.number().default(12),
+        }),
+        z.object({
+          action: z.literal('leaderCount'),
+          campusId: z.coerce.number().optional(),
+          groupTypeId: z.coerce.number().optional(),
+          ageGroupBreakdown: z.coerce.boolean().default(false),
         }),
       ]);
     }
@@ -368,6 +380,161 @@ export const rockMinistryTool: GatewayTool = {
         return formatResponse(parsed.action, ctx, null, {
           code: 'HEALTH_ANALYSIS_ERROR',
           message: `Failed to analyze group health: ${err.message}`,
+        });
+      }
+    }
+
+    if (parsed.action === 'leaderCount') {
+      const { campusId, groupTypeId, ageGroupBreakdown } = parsed;
+      try {
+        // Resolve the connect-group type id (explicit override wins, else discover)
+        let connectGroupTypeId: number | undefined = groupTypeId;
+        let connectGroupTypeDiscovery: { name: string; confidence: number } | undefined;
+
+        if (connectGroupTypeId === undefined) {
+          if (!discoveryService) {
+            return formatResponse(parsed.action, ctx, null, {
+              code: 'NO_GROUP_TYPE',
+              message: 'No Connect Group type could be resolved: discovery service unavailable and no groupTypeId provided.',
+            });
+          }
+          const map = await discoveryService.getMap(ctx);
+          if (!map.groupTypes.connectGroups || map.groupTypes.connectGroups.length === 0) {
+            return formatResponse(parsed.action, ctx, null, {
+              code: 'NO_GROUP_TYPE',
+              message: 'No Connect Group type discovered. Provide groupTypeId explicitly or configure connect groups in Rock RMS.',
+            });
+          }
+          connectGroupTypeId = map.groupTypes.connectGroups[0].id;
+          connectGroupTypeDiscovery = {
+            name: map.groupTypes.connectGroups[0].name,
+            confidence: map.groupTypes.connectGroups[0].confidence,
+          };
+        } else {
+          connectGroupTypeDiscovery = { name: `groupTypeId ${connectGroupTypeId}`, confidence: 1.0 };
+        }
+
+        // Resolve campus name for display (campusId is already numeric; no name resolution needed for query)
+        let campusName = 'All';
+        let groupAgeGroupAttrAvailable = false;
+        if ((campusId !== undefined || ageGroupBreakdown) && discoveryService) {
+          try {
+            const map = await discoveryService.getMap(ctx);
+            if (campusId !== undefined) {
+              const matchedCampus = (map.campuses || []).find((c: any) => c.id === campusId);
+              if (matchedCampus) campusName = matchedCampus.name;
+            }
+            groupAgeGroupAttrAvailable = !!(map.attributes?.groupAgeGroup && map.attributes.groupAgeGroup.length > 0);
+          } catch {
+            // Non-fatal: fall back to defaults
+          }
+        }
+
+        // Fetch candidate groups (v2 first, v1 fallback). Over-fetch by 1 to detect truncation.
+        let allGroups: any[] = [];
+        const whereClause =
+          campusId !== undefined
+            ? `GroupTypeId == ${connectGroupTypeId} && IsActive == true && CampusId == ${campusId}`
+            : `GroupTypeId == ${connectGroupTypeId} && IsActive == true`;
+
+        try {
+          allGroups = await rockClient.post(ctx, '/api/v2/models/groups/search', {
+            Where: whereClause,
+            Limit: MAX_GROUPS_ANALYZED + 1,
+          });
+        } catch (_err) {
+          const v1Filter =
+            campusId !== undefined
+              ? `GroupTypeId eq ${connectGroupTypeId} and IsActive eq true and CampusId eq ${campusId}`
+              : `GroupTypeId eq ${connectGroupTypeId} and IsActive eq true`;
+          allGroups = await rockClient.get(ctx, `/api/Groups?$filter=${encodeURIComponent(v1Filter)}&$top=${MAX_GROUPS_ANALYZED + 1}`);
+        }
+
+        const truncated = allGroups.length > MAX_GROUPS_ANALYZED;
+        const groupsToAnalyze = allGroups.slice(0, MAX_GROUPS_ANALYZED);
+
+        // Known age-group buckets for best-effort name matching
+        const AGE_BUCKETS = ['Seasoned', 'Adults', 'Young Adults', 'Youth', 'Kids'];
+        const matchBucket = (name: string): string | null => {
+          const lower = (name || '').toLowerCase();
+          // Check more specific buckets first (Young Adults before Adults)
+          if (lower.includes('young adult')) return 'Young Adults';
+          if (lower.includes('seasoned')) return 'Seasoned';
+          if (lower.includes('youth') || lower.includes('teen')) return 'Youth';
+          if (lower.includes('kid') || lower.includes('child')) return 'Kids';
+          if (lower.includes('adult')) return 'Adults';
+          return null;
+        };
+
+        const distinctLeaders = new Set<number>();
+        // Track distinct leaders per bucket (each person counted once per bucket)
+        const bucketLeaderSets: Record<string, Set<number>> = {};
+        let breakdownResolvable = false;
+
+        for (const group of groupsToAnalyze) {
+          try {
+            let members: any[] = [];
+            try {
+              members = await rockClient.post(ctx, '/api/v2/models/groupmembers/search', {
+                Where: `GroupId == ${group.Id}`,
+              });
+            } catch (_err) {
+              members = await rockClient.get(ctx, `/api/GroupMembers?$filter=GroupId eq ${group.Id}&$expand=Person,GroupRole`);
+            }
+
+            const bucket = ageGroupBreakdown ? matchBucket(group.Name) : null;
+            if (bucket) breakdownResolvable = true;
+
+            for (const m of members) {
+              const role = m.GroupRole || {};
+              if (role.IsLeader !== true) continue;
+              const personId: number | null = m.PersonId ?? (m.Person ? m.Person.Id : null);
+              if (personId === null || personId === undefined) continue;
+              distinctLeaders.add(personId);
+
+              if (ageGroupBreakdown && bucket) {
+                if (!bucketLeaderSets[bucket]) bucketLeaderSets[bucket] = new Set<number>();
+                bucketLeaderSets[bucket].add(personId);
+              }
+            }
+          } catch (err: any) {
+            // Log but continue to next group
+            console.warn(`Error analyzing group ${group.Id} for leaderCount: ${err.message}`);
+          }
+        }
+
+        const response: any = {
+          campus: campusName,
+          totalLeaders: distinctLeaders.size,
+          groupsAnalyzed: groupsToAnalyze.length,
+          truncated,
+          discovery: {
+            connectGroupType: connectGroupTypeDiscovery,
+          },
+        };
+
+        if (ageGroupBreakdown) {
+          if (breakdownResolvable) {
+            const breakdown: Record<string, number> = {};
+            for (const bucket of AGE_BUCKETS) {
+              if (bucketLeaderSets[bucket]) breakdown[bucket] = bucketLeaderSets[bucket].size;
+            }
+            response.breakdown = breakdown;
+            if (!groupAgeGroupAttrAvailable) {
+              response.warning =
+                'Age-group breakdown is best-effort, derived from group name matching (group age-group attribute not available).';
+            }
+          } else {
+            response.warning =
+              'Age-group breakdown unavailable: could not reliably determine age groups for the analyzed groups.';
+          }
+        }
+
+        return formatResponse(parsed.action, ctx, response);
+      } catch (err: any) {
+        return formatResponse(parsed.action, ctx, null, {
+          code: 'LEADER_COUNT_ERROR',
+          message: `Failed to count leaders: ${err.message}`,
         });
       }
     }
