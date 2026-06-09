@@ -10,23 +10,23 @@ import { authorizeWrite } from '../auth/authorization.js';
 const rockWorkflowSchema = z.discriminatedUnion('action', [
   z.object({
     action: z.literal('connectionRequests'),
-    limit: z.number().int().positive().max(100).default(50),
+    limit: z.coerce.number().int().positive().max(100).default(50),
   }),
   z.object({
     action: z.literal('workflowTypes'),
-    limit: z.number().int().positive().max(100).default(50),
+    limit: z.coerce.number().int().positive().max(100).default(50),
   }),
   z.object({
     action: z.literal('workflowStatus'),
-    workflowId: z.number(),
+    workflowId: z.coerce.number(),
   }),
   z.object({
     action: z.literal('steps'),
-    workflowId: z.number(),
+    workflowId: z.coerce.number(),
   }),
   z.object({
     action: z.literal('launchWorkflow'),
-    workflowTypeId: z.number(),
+    workflowTypeId: z.coerce.number(),
     name: z.string().optional(),
     dryRun: z.boolean().default(true),
     commit: z.boolean().default(false),
@@ -34,7 +34,7 @@ const rockWorkflowSchema = z.discriminatedUnion('action', [
   }),
   z.object({
     action: z.literal('updateWorkflow'),
-    workflowId: z.number(),
+    workflowId: z.coerce.number(),
     status: z.string().optional(),
     isCompleted: z.boolean().optional(),
     dryRun: z.boolean().default(true),
@@ -43,16 +43,16 @@ const rockWorkflowSchema = z.discriminatedUnion('action', [
   }),
   z.object({
     action: z.literal('completeAction'),
-    activityId: z.number(),
+    activityId: z.coerce.number(),
     dryRun: z.boolean().default(true),
     commit: z.boolean().default(false),
     reason: z.string().min(1),
   }),
   z.object({
     action: z.literal('updateConnectionRequest'),
-    connectionRequestId: z.number(),
-    statusId: z.number().optional(),
-    assignedPersonAliasId: z.number().optional(),
+    connectionRequestId: z.coerce.number(),
+    statusId: z.coerce.number().optional(),
+    assignedPersonAliasId: z.coerce.number().optional(),
     comments: z.string().optional(),
     dryRun: z.boolean().default(true),
     commit: z.boolean().default(false),
@@ -70,19 +70,19 @@ export const rockWorkflowTool: GatewayTool = {
       return z.discriminatedUnion('action', [
         z.object({
           action: z.literal('connectionRequests'),
-          limit: z.number().int().positive().max(100).default(50),
+          limit: z.coerce.number().int().positive().max(100).default(50),
         }),
         z.object({
           action: z.literal('workflowTypes'),
-          limit: z.number().int().positive().max(100).default(50),
+          limit: z.coerce.number().int().positive().max(100).default(50),
         }),
         z.object({
           action: z.literal('workflowStatus'),
-          workflowId: z.number(),
+          workflowId: z.coerce.number(),
         }),
         z.object({
           action: z.literal('steps'),
-          workflowId: z.number(),
+          workflowId: z.coerce.number(),
         }),
       ]);
     }

@@ -51,7 +51,12 @@ function appOptions(verifier: OAuthTokenVerifier): CreateAppContextOptions {
     oauthConfig,
     oauthMetadata,
     verifier,
-    env: { ROCK_PUBLIC_URL: 'https://rock.example.com' },
+    env: {
+      ROCK_PUBLIC_URL: 'https://rock.example.com',
+      AUTH0_CLIENT_ID: 'test-shared-client',
+      AUTH0_MANAGEMENT_CLIENT_ID: 'test-mgmt-client',
+      AUTH0_MANAGEMENT_CLIENT_SECRET: 'test-mgmt-secret',
+    },
     rockClientFactory: () => new FakeRockClient(),
   };
 }

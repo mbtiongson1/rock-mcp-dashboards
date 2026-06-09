@@ -12,12 +12,12 @@ const rockReportSchema = z.discriminatedUnion('action', [
   z.object({
     action: z.literal('list'),
     query: z.string().optional(),
-    limit: z.number().int().positive().max(100).default(50),
+    limit: z.coerce.number().int().positive().max(100).default(50),
   }),
   z.object({
     action: z.literal('run'),
-    reportId: z.number(),
-    limit: z.number().int().positive().max(500).default(50),
+    reportId: z.coerce.number(),
+    limit: z.coerce.number().int().positive().max(500).default(50),
   }),
   z.object({
     action: z.literal('summary'),

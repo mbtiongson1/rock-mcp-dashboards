@@ -17,12 +17,12 @@ const readOnlyPeopleActions = [
   z.object({
     action: z.literal('find'),
     query: z.string().min(1),
-    limit: z.number().int().positive().max(100).default(20),
+    limit: z.coerce.number().int().positive().max(100).default(20),
   }),
   z.object({
     action: z.literal('profile'),
     person: z.object({
-      id: z.number().optional(),
+      id: z.coerce.number().optional(),
       guid: z.string().optional(),
       search: z.string().optional(),
     }),
@@ -32,7 +32,7 @@ const readOnlyPeopleActions = [
   z.object({
     action: z.literal('groups'),
     person: z.object({
-      id: z.number().optional(),
+      id: z.coerce.number().optional(),
       guid: z.string().optional(),
       search: z.string().optional(),
     }),
@@ -40,7 +40,7 @@ const readOnlyPeopleActions = [
   z.object({
     action: z.literal('family'),
     person: z.object({
-      id: z.number().optional(),
+      id: z.coerce.number().optional(),
       guid: z.string().optional(),
       search: z.string().optional(),
     }),
@@ -48,7 +48,7 @@ const readOnlyPeopleActions = [
   z.object({
     action: z.literal('connectionStatus'),
     person: z.object({
-      id: z.number().optional(),
+      id: z.coerce.number().optional(),
       guid: z.string().optional(),
       search: z.string().optional(),
     }),
@@ -56,19 +56,27 @@ const readOnlyPeopleActions = [
   z.object({
     action: z.literal('attendanceSummary'),
     person: z.object({
-      id: z.number().optional(),
+      id: z.coerce.number().optional(),
       guid: z.string().optional(),
       search: z.string().optional(),
     }),
-    windowWeeks: z.number().int().positive().max(52).default(12),
+    windowWeeks: z.coerce.number().int().positive().max(52).default(12),
   }),
   z.object({
     action: z.literal('servingSummary'),
     person: z.object({
-      id: z.number().optional(),
+      id: z.coerce.number().optional(),
       guid: z.string().optional(),
       search: z.string().optional(),
     }),
+  }),
+  z.object({
+    action: z.literal('filter'),
+    campusId: z.coerce.number().optional(),
+    connectionStatus: z.string().optional(),
+    isActive: z.coerce.boolean().optional(),
+    top: z.coerce.number().int().positive().max(500).default(200),
+    countOnly: z.coerce.boolean().default(false),
   }),
 ] as const;
 
@@ -76,7 +84,7 @@ const readOnlyPeopleActions = [
 const writeActions = [
   z.object({
     action: z.literal('updateContactInfo'),
-    personId: z.number().optional(),
+    personId: z.coerce.number().optional(),
     personGuid: z.string().optional(),
     email: z.string().email().optional(),
     phone: z.string().optional(),
@@ -88,7 +96,7 @@ const writeActions = [
   }),
   z.object({
     action: z.literal('patchAttributes'),
-    personId: z.number().optional(),
+    personId: z.coerce.number().optional(),
     personGuid: z.string().optional(),
     attributes: z.record(z.unknown()),
     dryRun: z.boolean().default(true),
@@ -97,7 +105,7 @@ const writeActions = [
   }),
   z.object({
     action: z.literal('createNote'),
-    personId: z.number().optional(),
+    personId: z.coerce.number().optional(),
     personGuid: z.string().optional(),
     text: z.string().min(1),
     noteType: z.string().optional(),
@@ -107,12 +115,12 @@ const writeActions = [
   }),
   z.object({
     action: z.literal('createFollowUpTask'),
-    personId: z.number().optional(),
+    personId: z.coerce.number().optional(),
     personGuid: z.string().optional(),
     title: z.string().min(1),
     description: z.string().optional(),
-    assignedToId: z.number().optional(),
-    connectionOpportunityId: z.number().optional(),
+    assignedToId: z.coerce.number().optional(),
+    connectionOpportunityId: z.coerce.number().optional(),
     dryRun: z.boolean().default(true),
     commit: z.boolean().default(false),
     reason: z.string().min(1),
@@ -588,6 +596,37 @@ async function resolveCampusName(
     // Ignore
   }
 
+  return null;
+}
+
+/**
+ * Resolve a DefinedValue ID by DefinedType name and Value name.
+ * Returns the numeric ID or null if not resolvable.
+ */
+async function resolveDefinedValueId(
+  client: RockClient,
+  ctx: OAuthRockContext,
+  definedTypeName: string,
+  valueName: string
+): Promise<number | null> {
+  try {
+    const results = await client.get<any[]>(
+      ctx,
+      `/api/DefinedValues?$filter=DefinedType/Name eq ${quoteODataString(definedTypeName)} and Value eq ${quoteODataString(valueName)}&$top=1`
+    );
+    if (results && results.length > 0) return results[0].Id;
+  } catch {
+    // Fallback: try by substringof on DefinedType
+    try {
+      const results = await client.get<any[]>(
+        ctx,
+        `/api/DefinedValues?$filter=substringof(${quoteODataString(definedTypeName)}, DefinedType/Name) eq true and Value eq ${quoteODataString(valueName)}&$top=1`
+      );
+      if (results && results.length > 0) return results[0].Id;
+    } catch {
+      // Unable to resolve
+    }
+  }
   return null;
 }
 
@@ -1480,6 +1519,135 @@ export const rockPeopleTool: GatewayTool = {
         return formatResponse(parsed.action, ctx, null, {
           code: 'CREATE_TASK_ERROR',
           message: err.message,
+        });
+      }
+    }
+
+    if (parsed.action === 'filter') {
+      const { campusId, connectionStatus, isActive, top, countOnly } = parsed;
+      try {
+        const warnings: string[] = [];
+
+        // Build filter clauses
+        const clauses: string[] = [];
+        const odataClauses: string[] = [];
+
+        // Campus filter
+        if (campusId !== undefined) {
+          clauses.push(`PrimaryCampusId == ${campusId}`);
+          odataClauses.push(`PrimaryCampusId eq ${campusId}`);
+        }
+
+        // Connection status filter
+        let resolvedConnectionStatusId: number | null = null;
+        if (connectionStatus !== undefined) {
+          if (/^\d+$/.test(connectionStatus)) {
+            resolvedConnectionStatusId = parseInt(connectionStatus, 10);
+          } else {
+            resolvedConnectionStatusId = await resolveDefinedValueId(rockClient, ctx, 'Connection Status', connectionStatus);
+            if (resolvedConnectionStatusId === null) {
+              return formatResponse(parsed.action, ctx, null, {
+                code: 'CONNECTION_STATUS_UNRESOLVED',
+                message: `Could not resolve connection status "${connectionStatus}" to a DefinedValue ID. Check the name or provide a numeric ID.`,
+              });
+            }
+          }
+          clauses.push(`ConnectionStatusValueId == ${resolvedConnectionStatusId}`);
+          odataClauses.push(`ConnectionStatusValueId eq ${resolvedConnectionStatusId}`);
+        }
+
+        // isActive filter: resolve the "Active" RecordStatus DefinedValue ID
+        if (isActive !== undefined) {
+          const activeRecordStatusId = await resolveDefinedValueId(rockClient, ctx, 'Record Status', 'Active');
+          if (activeRecordStatusId === null) {
+            warnings.push('isActive filter could not be applied: could not resolve the "Active" RecordStatus DefinedValue ID.');
+          } else {
+            if (isActive) {
+              clauses.push(`RecordStatusValueId == ${activeRecordStatusId}`);
+              odataClauses.push(`RecordStatusValueId eq ${activeRecordStatusId}`);
+            } else {
+              clauses.push(`RecordStatusValueId != ${activeRecordStatusId}`);
+              odataClauses.push(`RecordStatusValueId ne ${activeRecordStatusId}`);
+            }
+          }
+        }
+
+        const whereClause = clauses.join(' && ');
+        const odataFilter = odataClauses.join(' and ');
+
+        // Try v2 first
+        let results: any[] | null = null;
+        let v2Count: number | null = null;
+        try {
+          const v2Payload: any = {
+            Limit: top,
+          };
+          if (whereClause) v2Payload.Where = whereClause;
+          if (countOnly) v2Payload.IsCountOnly = true;
+
+          const v2Result: any = await rockClient.post(ctx, '/api/v2/models/people/search', v2Payload);
+
+          if (countOnly) {
+            // v2 returns count as a number when IsCountOnly is true
+            if (typeof v2Result === 'number') {
+              v2Count = v2Result;
+            } else if (Array.isArray(v2Result)) {
+              v2Count = v2Result.length;
+            } else if (v2Result && typeof v2Result.count === 'number') {
+              v2Count = v2Result.count;
+            } else {
+              v2Count = Array.isArray(v2Result) ? v2Result.length : 0;
+            }
+          } else {
+            results = Array.isArray(v2Result) ? v2Result : [];
+          }
+        } catch (_v2Err) {
+          // Fallback to v1 OData
+          try {
+            const url = `/api/People?$top=${top}${odataFilter ? `&$filter=${encodeURIComponent(odataFilter)}` : ''}`;
+            const v1Result = await rockClient.get<any[]>(ctx, url);
+            results = Array.isArray(v1Result) ? v1Result : [];
+            if (countOnly) {
+              v2Count = results.length;
+              results = null;
+            }
+          } catch (v1Err: any) {
+            return formatResponse(parsed.action, ctx, null, {
+              code: 'FILTER_ERROR',
+              message: `Failed to filter people: ${v1Err.message}`,
+            });
+          }
+        }
+
+        if (countOnly) {
+          const response: any = { count: v2Count ?? 0 };
+          if (warnings.length > 0) response.warnings = warnings;
+          return formatResponse(parsed.action, ctx, response);
+        }
+
+        // Project results to privacy-safe shape
+        const safeResults = (results ?? []).map((p: any) => {
+          const item: any = {
+            id: p.Id,
+            guid: p.Guid,
+            name: `${p.NickName || p.FirstName || ''} ${p.LastName || ''}`.trim(),
+          };
+          if (p.PrimaryCampusId) item.campus = { id: p.PrimaryCampusId };
+          if (p.ConnectionStatusValue) {
+            item.connectionStatus = p.ConnectionStatusValue;
+          } else if (p.ConnectionStatusValueId) {
+            item.connectionStatus = p.ConnectionStatusValueId;
+          }
+          return item;
+        });
+
+        const response: any = { people: safeResults, total: safeResults.length };
+        if (warnings.length > 0) response.warnings = warnings;
+        return formatResponse(parsed.action, ctx, response);
+      } catch (err: any) {
+        return formatResponse(parsed.action, ctx, null, {
+          code: 'FILTER_ERROR',
+          message: `Failed to filter people: ${err.message}`,
         });
       }
     }

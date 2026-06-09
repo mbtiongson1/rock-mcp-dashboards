@@ -712,4 +712,230 @@ describe('rock_people tool', () => {
     expect(response.result.errors.phone).toBeDefined();
     expect(response.result.errors.phone).toContain('PhoneNumber creation failed');
   });
+
+  // ── filter action tests ──────────────────────────────────────────────────
+
+  it('filter: countOnly returns { count } and calls v2 search with IsCountOnly', async () => {
+    // v2 returns a number when IsCountOnly = true
+    mockClient.post.mockResolvedValueOnce(42);
+
+    const result = await rockPeopleTool.handle(
+      { action: 'filter', campusId: 1, countOnly: true },
+      null,
+      mockCtx
+    );
+
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.ok).toBe(true);
+    expect(response.result.count).toBe(42);
+
+    // v2 search should have been called with IsCountOnly and a Where containing campus clause
+    expect(mockClient.post).toHaveBeenCalledWith(
+      mockCtx,
+      '/api/v2/models/people/search',
+      expect.objectContaining({
+        IsCountOnly: true,
+        Where: expect.stringContaining('PrimaryCampusId == 1'),
+      })
+    );
+  });
+
+  it('filter: countOnly with connectionStatus clause includes both in Where', async () => {
+    // First call: resolve connection status DefinedValue (connectionStatus is numeric string)
+    mockClient.post.mockResolvedValueOnce(15); // count result
+
+    const result = await rockPeopleTool.handle(
+      { action: 'filter', campusId: 2, connectionStatus: '99', countOnly: true },
+      null,
+      mockCtx
+    );
+
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.ok).toBe(true);
+    expect(response.result.count).toBe(15);
+
+    const call = mockClient.post.mock.calls[0];
+    expect(call[2].Where).toContain('PrimaryCampusId == 2');
+    expect(call[2].Where).toContain('ConnectionStatusValueId == 99');
+  });
+
+  it('filter: returns privacy-projected records (no email/phone) when countOnly is false', async () => {
+    mockClient.post.mockResolvedValueOnce([
+      {
+        Id: 100,
+        Guid: 'guid-100',
+        FirstName: 'Jane',
+        NickName: 'Jane',
+        LastName: 'Doe',
+        Email: 'jane@example.com',
+        PrimaryCampusId: 1,
+        ConnectionStatusValue: 'Leader',
+      },
+      {
+        Id: 101,
+        Guid: 'guid-101',
+        FirstName: 'Bob',
+        NickName: 'Bob',
+        LastName: 'Smith',
+        Email: 'bob@example.com',
+        PrimaryCampusId: 1,
+        ConnectionStatusValue: 'Core',
+      },
+    ]);
+
+    const result = await rockPeopleTool.handle(
+      { action: 'filter', campusId: 1 },
+      null,
+      mockCtx
+    );
+
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.ok).toBe(true);
+    expect(response.result.people).toHaveLength(2);
+    expect(response.result.total).toBe(2);
+
+    const person = response.result.people[0];
+    expect(person.id).toBe(100);
+    expect(person.guid).toBe('guid-100');
+    expect(person.name).toBe('Jane Doe');
+    expect(person.campus).toEqual({ id: 1 });
+    expect(person.connectionStatus).toBe('Leader');
+
+    // Ensure sensitive data is never returned
+    expect(person.email).toBeUndefined();
+    expect(person.phone).toBeUndefined();
+    expect(person.birthdate).toBeUndefined();
+  });
+
+  it('filter: connectionStatus name resolution path — resolves name to ID via DefinedValue lookup', async () => {
+    // Mock the DefinedValue lookup (via client.get) to return an ID
+    mockClient.get.mockResolvedValueOnce([{ Id: 77 }]); // DefinedValue for "Leader"
+
+    // Mock the v2 people search returning results
+    mockClient.post.mockResolvedValueOnce([
+      {
+        Id: 200,
+        Guid: 'guid-200',
+        NickName: 'Tom',
+        LastName: 'Jones',
+        ConnectionStatusValueId: 77,
+      },
+    ]);
+
+    const result = await rockPeopleTool.handle(
+      { action: 'filter', connectionStatus: 'Leader' },
+      null,
+      mockCtx
+    );
+
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.ok).toBe(true);
+    expect(response.result.people).toHaveLength(1);
+
+    // Verify the DefinedValue lookup was called for 'Connection Status' / 'Leader'
+    expect(mockClient.get).toHaveBeenCalledWith(
+      mockCtx,
+      expect.stringContaining('Connection Status')
+    );
+
+    // Verify the resolved ID (77) was used in the Where clause
+    const postCall = mockClient.post.mock.calls[0];
+    expect(postCall[2].Where).toContain('ConnectionStatusValueId == 77');
+  });
+
+  it('filter: returns CONNECTION_STATUS_UNRESOLVED error when name cannot be resolved', async () => {
+    // DefinedValue lookup returns nothing (null from resolveDefinedValueId)
+    mockClient.get.mockResolvedValueOnce([]); // first query returns empty
+    mockClient.get.mockResolvedValueOnce([]); // fallback query also empty
+
+    const result = await rockPeopleTool.handle(
+      { action: 'filter', connectionStatus: 'NonExistentStatus' },
+      null,
+      mockCtx
+    );
+
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.ok).toBe(false);
+    expect(response.error.code).toBe('CONNECTION_STATUS_UNRESOLVED');
+    expect(response.error.message).toContain('NonExistentStatus');
+  });
+
+  it('filter: isActive adds RecordStatus warning when DefinedValue cannot be resolved', async () => {
+    // DefinedValue lookup for 'Record Status' / 'Active' returns nothing
+    mockClient.get.mockResolvedValueOnce([]); // first query empty
+    mockClient.get.mockResolvedValueOnce([]); // fallback also empty
+
+    // v2 search returns some results (without the isActive clause since it couldn't be applied)
+    mockClient.post.mockResolvedValueOnce([
+      {
+        Id: 300,
+        Guid: 'guid-300',
+        NickName: 'Ann',
+        LastName: 'Lee',
+      },
+    ]);
+
+    const result = await rockPeopleTool.handle(
+      { action: 'filter', isActive: true },
+      null,
+      mockCtx
+    );
+
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.ok).toBe(true);
+    // Warning should be present because isActive could not be applied
+    expect(response.result.warnings).toBeDefined();
+    expect(response.result.warnings[0]).toContain('isActive');
+  });
+
+  it('filter: falls back to v1 OData when v2 throws', async () => {
+    // v2 throws
+    mockClient.post.mockRejectedValueOnce(new Error('v2 unavailable'));
+
+    // v1 returns results
+    mockClient.get.mockResolvedValueOnce([
+      {
+        Id: 400,
+        Guid: 'guid-400',
+        NickName: 'Chris',
+        LastName: 'Martin',
+        PrimaryCampusId: 3,
+      },
+    ]);
+
+    const result = await rockPeopleTool.handle(
+      { action: 'filter', campusId: 3 },
+      null,
+      mockCtx
+    );
+
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.ok).toBe(true);
+    expect(response.result.people).toHaveLength(1);
+    expect(response.result.people[0].id).toBe(400);
+
+    // v1 was called with OData filter containing PrimaryCampusId
+    expect(mockClient.get).toHaveBeenCalledWith(
+      mockCtx,
+      expect.stringContaining('PrimaryCampusId')
+    );
+  });
+
+  it('filter: available in readonly mode (read-only action)', async () => {
+    // Verify schemaForMode includes filter in readonly mode
+    const schema = rockPeopleTool.schemaForMode('readonly', new Set(['read']));
+    expect(schema).not.toBeNull();
+
+    mockClient.post.mockResolvedValueOnce(5);
+
+    const result = await rockPeopleTool.handle(
+      { action: 'filter', countOnly: true },
+      null,
+      mockCtx // mockCtx is readonly mode
+    );
+
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.ok).toBe(true);
+    expect(typeof response.result.count).toBe('number');
+  });
 });

@@ -1,6 +1,7 @@
 import { afterEach, describe, it, expect } from 'vitest';
 import type { OAuthTokenVerifier } from '@modelcontextprotocol/sdk/server/auth/provider.js';
 import { buildAppContext, resetAppContextForTests } from './app-context.js';
+import { Auth0ManagementClient } from './auth0-management.js';
 import type { Auth0OAuthConfig, Auth0OAuthMetadata } from './oauth.js';
 import type { RockClient, RockClientConfig } from '../rock/client.js';
 import { ApiKeyStrategy, UserJwtStrategy } from '../rock/auth-strategy.js';
@@ -62,7 +63,12 @@ describe('buildAppContext', () => {
       oauthConfig,
       oauthMetadata,
       verifier,
-      env: { ROCK_PUBLIC_URL: 'https://rock.example.com' },
+      env: {
+        ROCK_PUBLIC_URL: 'https://rock.example.com',
+        AUTH0_CLIENT_ID: 'test-shared-client',
+        AUTH0_MANAGEMENT_CLIENT_ID: 'test-mgmt-client',
+        AUTH0_MANAGEMENT_CLIENT_SECRET: 'test-mgmt-secret',
+      },
       rockClientFactory: clientFactory.factory,
     });
 
@@ -77,7 +83,13 @@ describe('buildAppContext', () => {
       oauthConfig,
       oauthMetadata,
       verifier,
-      env: { ROCK_PUBLIC_URL: 'https://rock.example.com', ROCK_API_KEY: 'admin-key' },
+      env: {
+        ROCK_PUBLIC_URL: 'https://rock.example.com',
+        ROCK_API_KEY: 'admin-key',
+        AUTH0_CLIENT_ID: 'test-shared-client',
+        AUTH0_MANAGEMENT_CLIENT_ID: 'test-mgmt-client',
+        AUTH0_MANAGEMENT_CLIENT_SECRET: 'test-mgmt-secret',
+      },
       rockClientFactory: clientFactory.factory,
     });
 
@@ -91,11 +103,41 @@ describe('buildAppContext', () => {
       oauthConfig,
       oauthMetadata,
       verifier,
-      env: { ROCK_PUBLIC_URL: 'https://rock.example.com' },
+      env: {
+        ROCK_PUBLIC_URL: 'https://rock.example.com',
+        AUTH0_CLIENT_ID: 'test-shared-client',
+        AUTH0_MANAGEMENT_CLIENT_ID: 'test-mgmt-client',
+        AUTH0_MANAGEMENT_CLIENT_SECRET: 'test-mgmt-secret',
+      },
       rockClientFactory: makeClientFactory().factory,
     });
 
     expect(ctx.resourceMetadataUrl).toBe('https://mcp.example.com/.well-known/oauth-protected-resource');
     expect(ctx.oauthMetadata.issuer).toBe('https://auth.example.com/');
+  });
+
+  it('uses provided managementClient override when supplied', async () => {
+    const mockManagementClient = new Auth0ManagementClient(
+      oauthConfig,
+      'mock-mgmt-client-id',
+      'mock-mgmt-client-secret',
+      'mock-shared-client-id'
+    );
+
+    const ctx = await buildAppContext({
+      oauthConfig,
+      oauthMetadata,
+      verifier,
+      env: {
+        ROCK_PUBLIC_URL: 'https://rock.example.com',
+        AUTH0_CLIENT_ID: 'test-shared-client',
+        AUTH0_MANAGEMENT_CLIENT_ID: 'test-mgmt-client',
+        AUTH0_MANAGEMENT_CLIENT_SECRET: 'test-mgmt-secret',
+      },
+      rockClientFactory: makeClientFactory().factory,
+      managementClient: mockManagementClient,
+    });
+
+    expect(ctx.managementClient).toBe(mockManagementClient);
   });
 });
