@@ -78,6 +78,43 @@ const rockEntitySchema = z.discriminatedUnion('action', [
   })
 ]);
 
+/**
+ * Map common singular (and alternate) model name forms to the canonical plural
+ * form used by the allowlist and the v2 API path.
+ * Anything not in the map is returned lowercased unchanged.
+ */
+const SINGULAR_TO_PLURAL: Record<string, string> = {
+  person: 'people',
+  persons: 'people',
+  group: 'groups',
+  groupmember: 'groupmembers',
+  grouptype: 'grouptypes',
+  campus: 'campuses',
+  definedvalue: 'definedvalues',
+  definedtype: 'definedtypes',
+  attendance: 'attendances',
+  attendanceoccurrence: 'attendanceoccurrences',
+  connectionrequest: 'connectionrequests',
+  connectiontype: 'connectiontypes',
+  workflow: 'workflows',
+  workflowtype: 'workflowtypes',
+  attribute: 'attributes',
+  schedule: 'schedules',
+  location: 'locations',
+  note: 'notes',
+  report: 'reports',
+};
+
+/**
+ * Normalize a model name to the canonical plural lowercase form used by
+ * READ_MODEL_ALLOWLIST and the v2 API path (e.g. `/api/v2/models/{normalized}/...`).
+ * Handles singular forms, 'persons', and already-plural forms.
+ */
+function normalizeModelName(model: string): string {
+  const lower = model.toLowerCase();
+  return SINGULAR_TO_PLURAL[lower] ?? lower;
+}
+
 function getRestV1Path(model: string): string {
   const lower = model.toLowerCase();
   if (lower === 'people' || lower === 'person') return 'People';
@@ -180,8 +217,10 @@ export const rockEntityTool: GatewayTool = {
     if (parsed.action === 'search') {
       const { model, where, offset, limit } = parsed;
 
+      // Normalize model name (handles singular/capitalized variants like Person, Group, etc.)
+      const normalizedModel = normalizeModelName(model);
+
       // Enforce model allowlist for raw search
-      const normalizedModel = model.toLowerCase();
       if (!READ_MODEL_ALLOWLIST.has(normalizedModel)) {
         return formatResponse(parsed.action, ctx, null, {
           code: 'MODEL_NOT_ALLOWED',
@@ -190,7 +229,7 @@ export const rockEntityTool: GatewayTool = {
       }
 
       try {
-        const result = await rockClient.post(ctx, `/api/v2/models/${model}/search`, {
+        const result = await rockClient.post(ctx, `/api/v2/models/${normalizedModel}/search`, {
           Where: where,
           Offset: offset,
           Limit: limit,
@@ -258,10 +297,33 @@ export const rockEntityTool: GatewayTool = {
       } catch (err) {
         // Saved Entity Searches require REST v2 access (no v1 equivalent)
         const errorMessage = err instanceof Error ? err.message : String(err);
-        return formatResponse(parsed.action, ctx, null, {
+
+        // Best-effort: enrich error with discovered entity-search keys from discovery service
+        let discoveredKeys: Array<{ key: string; name: string }> | undefined;
+        try {
+          const discoveryService = (ctx as any).discoveryService;
+          if (discoveryService) {
+            const map = await discoveryService.getMap(ctx);
+            if (map?.entitySearches?.length > 0) {
+              discoveredKeys = map.entitySearches.map((s: any) => ({
+                key: s.idKey || s.name,
+                name: s.name,
+              }));
+            }
+          }
+        } catch {
+          // Gracefully omit discovery enrichment if unavailable
+        }
+
+        const errorPayload: Record<string, unknown> = {
           code: 'SEARCH_BY_KEY_ERROR',
-          message: `Saved Entity Search failed (requires REST v2 access): ${errorMessage}`,
-        });
+          message: `Saved Entity Search failed (requires REST v2 access): ${errorMessage}. Available keys can be listed via rock_lookup discovery.`,
+        };
+        if (discoveredKeys) {
+          errorPayload.availableSearchKeys = discoveredKeys;
+        }
+
+        return formatResponse(parsed.action, ctx, null, errorPayload as any);
       }
     }
 
@@ -290,8 +352,10 @@ export const rockEntityTool: GatewayTool = {
       }
 
       // Otherwise, use where-based count (raw LINQ)
+      // Normalize model name (handles singular/capitalized variants like Person, Group, etc.)
+      const normalizedModel = normalizeModelName(model);
+
       // Enforce model allowlist for raw count-by-where
-      const normalizedModel = model.toLowerCase();
       if (!READ_MODEL_ALLOWLIST.has(normalizedModel)) {
         return formatResponse(parsed.action, ctx, null, {
           code: 'MODEL_NOT_ALLOWED',
@@ -300,7 +364,7 @@ export const rockEntityTool: GatewayTool = {
       }
 
       try {
-        const result = await rockClient.post(ctx, `/api/v2/models/${model}/search`, {
+        const result = await rockClient.post(ctx, `/api/v2/models/${normalizedModel}/search`, {
           Where: where,
           IsCountOnly: true,
         });
