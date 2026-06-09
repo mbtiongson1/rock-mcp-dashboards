@@ -17,12 +17,12 @@ const readOnlyPeopleActions = [
   z.object({
     action: z.literal('find'),
     query: z.string().min(1),
-    limit: z.number().int().positive().max(100).default(20),
+    limit: z.coerce.number().int().positive().max(100).default(20),
   }),
   z.object({
     action: z.literal('profile'),
     person: z.object({
-      id: z.number().optional(),
+      id: z.coerce.number().optional(),
       guid: z.string().optional(),
       search: z.string().optional(),
     }),
@@ -32,7 +32,7 @@ const readOnlyPeopleActions = [
   z.object({
     action: z.literal('groups'),
     person: z.object({
-      id: z.number().optional(),
+      id: z.coerce.number().optional(),
       guid: z.string().optional(),
       search: z.string().optional(),
     }),
@@ -40,7 +40,7 @@ const readOnlyPeopleActions = [
   z.object({
     action: z.literal('family'),
     person: z.object({
-      id: z.number().optional(),
+      id: z.coerce.number().optional(),
       guid: z.string().optional(),
       search: z.string().optional(),
     }),
@@ -48,7 +48,7 @@ const readOnlyPeopleActions = [
   z.object({
     action: z.literal('connectionStatus'),
     person: z.object({
-      id: z.number().optional(),
+      id: z.coerce.number().optional(),
       guid: z.string().optional(),
       search: z.string().optional(),
     }),
@@ -56,16 +56,16 @@ const readOnlyPeopleActions = [
   z.object({
     action: z.literal('attendanceSummary'),
     person: z.object({
-      id: z.number().optional(),
+      id: z.coerce.number().optional(),
       guid: z.string().optional(),
       search: z.string().optional(),
     }),
-    windowWeeks: z.number().int().positive().max(52).default(12),
+    windowWeeks: z.coerce.number().int().positive().max(52).default(12),
   }),
   z.object({
     action: z.literal('servingSummary'),
     person: z.object({
-      id: z.number().optional(),
+      id: z.coerce.number().optional(),
       guid: z.string().optional(),
       search: z.string().optional(),
     }),
@@ -76,7 +76,7 @@ const readOnlyPeopleActions = [
 const writeActions = [
   z.object({
     action: z.literal('updateContactInfo'),
-    personId: z.number().optional(),
+    personId: z.coerce.number().optional(),
     personGuid: z.string().optional(),
     email: z.string().email().optional(),
     phone: z.string().optional(),
@@ -88,7 +88,7 @@ const writeActions = [
   }),
   z.object({
     action: z.literal('patchAttributes'),
-    personId: z.number().optional(),
+    personId: z.coerce.number().optional(),
     personGuid: z.string().optional(),
     attributes: z.record(z.unknown()),
     dryRun: z.boolean().default(true),
@@ -97,7 +97,7 @@ const writeActions = [
   }),
   z.object({
     action: z.literal('createNote'),
-    personId: z.number().optional(),
+    personId: z.coerce.number().optional(),
     personGuid: z.string().optional(),
     text: z.string().min(1),
     noteType: z.string().optional(),
@@ -107,12 +107,12 @@ const writeActions = [
   }),
   z.object({
     action: z.literal('createFollowUpTask'),
-    personId: z.number().optional(),
+    personId: z.coerce.number().optional(),
     personGuid: z.string().optional(),
     title: z.string().min(1),
     description: z.string().optional(),
-    assignedToId: z.number().optional(),
-    connectionOpportunityId: z.number().optional(),
+    assignedToId: z.coerce.number().optional(),
+    connectionOpportunityId: z.coerce.number().optional(),
     dryRun: z.boolean().default(true),
     commit: z.boolean().default(false),
     reason: z.string().min(1),

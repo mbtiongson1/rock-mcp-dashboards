@@ -17,24 +17,24 @@ const rockMinistrySchema = z.discriminatedUnion('action', [
   z.object({
     action: z.literal('groups'),
     kind: z.enum(['connectGroup', 'ministryTeam']),
-    limit: z.number().int().positive().max(100).default(50),
+    limit: z.coerce.number().int().positive().max(100).default(50),
   }),
   z.object({
     action: z.literal('groupMembers'),
-    groupId: z.number(),
-    limit: z.number().int().positive().max(200).default(50),
+    groupId: z.coerce.number(),
+    limit: z.coerce.number().int().positive().max(200).default(50),
   }),
   z.object({
     action: z.literal('connectGroupHealth'),
     campus: z.string().optional(),
     ageGroup: z.string().optional(),
-    windowWeeks: z.number().default(12),
+    windowWeeks: z.coerce.number().default(12),
   }),
   z.object({
     action: z.literal('addOrUpdateGroupMember'),
-    groupId: z.number(),
-    personId: z.number(),
-    roleId: z.number().optional(),
+    groupId: z.coerce.number(),
+    personId: z.coerce.number(),
+    roleId: z.coerce.number().optional(),
     status: z.enum(['Active', 'Inactive']).default('Active'),
     dryRun: z.boolean().default(true),
     commit: z.boolean().default(false),
@@ -42,17 +42,17 @@ const rockMinistrySchema = z.discriminatedUnion('action', [
   }),
   z.object({
     action: z.literal('removeGroupMember'),
-    groupMemberId: z.number().optional(),
-    groupId: z.number().optional(),
-    personId: z.number().optional(),
+    groupMemberId: z.coerce.number().optional(),
+    groupId: z.coerce.number().optional(),
+    personId: z.coerce.number().optional(),
     dryRun: z.boolean().default(true),
     commit: z.boolean().default(false),
     reason: z.string().min(1),
   }),
   z.object({
     action: z.literal('addAttendance'),
-    groupId: z.number(),
-    personId: z.number(),
+    groupId: z.coerce.number(),
+    personId: z.coerce.number(),
     occurrenceDate: z.string().optional(), // YYYY-MM-DD
     didAttend: z.boolean().default(true),
     dryRun: z.boolean().default(true),
@@ -61,8 +61,8 @@ const rockMinistrySchema = z.discriminatedUnion('action', [
   }),
   z.object({
     action: z.literal('updateServingRoster'),
-    groupMemberId: z.number(),
-    roleId: z.number().optional(),
+    groupMemberId: z.coerce.number(),
+    roleId: z.coerce.number().optional(),
     status: z.enum(['Active', 'Inactive']).optional(),
     dryRun: z.boolean().default(true),
     commit: z.boolean().default(false),
@@ -81,18 +81,18 @@ export const rockMinistryTool: GatewayTool = {
         z.object({
           action: z.literal('groups'),
           kind: z.enum(['connectGroup', 'ministryTeam']),
-          limit: z.number().int().positive().max(100).default(50),
+          limit: z.coerce.number().int().positive().max(100).default(50),
         }),
         z.object({
           action: z.literal('groupMembers'),
-          groupId: z.number(),
-          limit: z.number().int().positive().max(200).default(50),
+          groupId: z.coerce.number(),
+          limit: z.coerce.number().int().positive().max(200).default(50),
         }),
         z.object({
           action: z.literal('connectGroupHealth'),
           campus: z.string().optional(),
           ageGroup: z.string().optional(),
-          windowWeeks: z.number().default(12),
+          windowWeeks: z.coerce.number().default(12),
         }),
       ]);
     }

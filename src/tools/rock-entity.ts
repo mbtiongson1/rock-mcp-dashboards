@@ -42,7 +42,7 @@ const rockEntitySchema = z.discriminatedUnion('action', [
   z.object({
     action: z.literal('get'),
     model: z.string().min(1),
-    id: z.union([z.string(), z.number()]),
+    id: z.union([z.string(), z.coerce.number()]),
     includeAttributes: z.boolean().default(false),
     shape: z.enum(['summary', 'full']).default('summary')
   }),
@@ -52,8 +52,8 @@ const rockEntitySchema = z.discriminatedUnion('action', [
     where: z.string().min(1).optional(),
     select: z.string().min(1).optional(),
     sort: z.string().min(1).optional(),
-    offset: z.number().int().nonnegative().default(0),
-    limit: z.number().int().positive().max(500).default(50),
+    offset: z.coerce.number().int().nonnegative().default(0),
+    limit: z.coerce.number().int().positive().max(500).default(50),
     shape: z.enum(['count', 'summary', 'table', 'full']).default('summary')
   }),
   z.object({
@@ -61,8 +61,8 @@ const rockEntitySchema = z.discriminatedUnion('action', [
     model: z.string().min(1).optional(),
     searchKey: z.string().min(1),
     refinements: z.record(z.unknown()).default({}),
-    offset: z.number().int().nonnegative().default(0),
-    limit: z.number().int().positive().max(1000).default(100),
+    offset: z.coerce.number().int().nonnegative().default(0),
+    limit: z.coerce.number().int().positive().max(1000).default(100),
     shape: z.enum(['count', 'summary', 'table', 'full']).default('table')
   }),
   z.object({
@@ -74,7 +74,7 @@ const rockEntitySchema = z.discriminatedUnion('action', [
   z.object({
     action: z.literal('attributeValues'),
     model: z.string().min(1),
-    id: z.union([z.string(), z.number()])
+    id: z.union([z.string(), z.coerce.number()])
   })
 ]);
 

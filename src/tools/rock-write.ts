@@ -19,7 +19,7 @@ const rockWriteSchema = z.discriminatedUnion('action', [
   z.object({
     action: z.literal('patch'),
     model: z.string().min(1),
-    id: z.union([z.string(), z.number()]),
+    id: z.union([z.string(), z.coerce.number()]),
     data: z.record(z.unknown()),
     dryRun: z.boolean().default(true),
     commit: z.boolean().default(false),
@@ -28,7 +28,7 @@ const rockWriteSchema = z.discriminatedUnion('action', [
   z.object({
     action: z.literal('patchAttributes'),
     model: z.string().min(1),
-    id: z.union([z.string(), z.number()]),
+    id: z.union([z.string(), z.coerce.number()]),
     attributes: z.record(z.unknown()),
     dryRun: z.boolean().default(true),
     commit: z.boolean().default(false),
@@ -37,7 +37,7 @@ const rockWriteSchema = z.discriminatedUnion('action', [
   z.object({
     action: z.literal('delete'),
     model: z.string().min(1),
-    id: z.union([z.string(), z.number()]),
+    id: z.union([z.string(), z.coerce.number()]),
     dryRun: z.boolean().default(true),
     commit: z.boolean().default(false),
     reason: z.string().optional(),
@@ -45,7 +45,7 @@ const rockWriteSchema = z.discriminatedUnion('action', [
   z.object({
     action: z.literal('bulkPatch'),
     model: z.string().min(1),
-    items: z.array(z.object({ id: z.union([z.string(), z.number()]), data: z.record(z.unknown()) })).min(1),
+    items: z.array(z.object({ id: z.union([z.string(), z.coerce.number()]), data: z.record(z.unknown()) })).min(1),
     dryRun: z.boolean().default(true),
     commit: z.boolean().default(false),
     reason: z.string().optional(),

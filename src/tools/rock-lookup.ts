@@ -20,7 +20,7 @@ const rockLookupSchema = z.discriminatedUnion('action', [
       'attribute',
       'definedValue'
     ])).optional(),
-    limit: z.number().int().positive().max(50).default(10)
+    limit: z.coerce.number().int().positive().max(50).default(10)
   }),
   z.object({
     action: z.literal('discovery'),
