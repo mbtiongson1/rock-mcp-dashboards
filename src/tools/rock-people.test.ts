@@ -462,7 +462,9 @@ describe('rock_people tool', () => {
     const patchCall = vi.fn();
     const postCall = vi.fn();
 
-    // First get: DefinedValue for Mobile
+    // First get: DefinedTypes lookup for 'Phone Type'
+    getCall.mockResolvedValueOnce([{ Id: 13 }]);
+    // Second get: DefinedValues for that type (Mobile)
     getCall.mockResolvedValueOnce([
       { Id: 1, Value: 'Mobile', Guid: '407E7E45-7B2E-4FCD-9605-ECB1339F2453' },
     ]);
@@ -523,7 +525,9 @@ describe('rock_people tool', () => {
     const getCall = vi.fn();
     const patchCall = vi.fn();
 
-    // First get: DefinedValue for Mobile
+    // First get: DefinedTypes lookup for 'Phone Type'
+    getCall.mockResolvedValueOnce([{ Id: 13 }]);
+    // Second get: DefinedValues for that type (Mobile)
     getCall.mockResolvedValueOnce([
       { Id: 1, Value: 'Mobile', Guid: '407E7E45-7B2E-4FCD-9605-ECB1339F2453' },
     ]);
@@ -668,7 +672,9 @@ describe('rock_people tool', () => {
     const patchCall = vi.fn();
     const postCall = vi.fn();
 
-    // First get: DefinedValue for Mobile (in resolveMobilePhoneTypeId)
+    // First get: DefinedTypes lookup for 'Phone Type'
+    getCall.mockResolvedValueOnce([{ Id: 13 }]);
+    // Second get: DefinedValues for that type (Mobile)
     getCall.mockResolvedValueOnce([
       { Id: 1, Value: 'Mobile', Guid: '407E7E45-7B2E-4FCD-9605-ECB1339F2453' },
     ]);
@@ -833,7 +839,9 @@ describe('rock_people tool', () => {
     });
 
     it('resolves a connectionStatus name to its DefinedValue ID', async () => {
-      mockClient.get.mockResolvedValueOnce([{ Id: 77, Value: 'Leader' }]);
+      mockClient.get
+        .mockResolvedValueOnce([{ Id: 4 }]) // DefinedTypes lookup
+        .mockResolvedValueOnce([{ Id: 77, Value: 'Leader' }]);
       mockFilterPost(1, [{ Id: 200, Guid: 'guid-200', NickName: 'Tom', LastName: 'Jones', ConnectionStatusValueId: 77 }]);
 
       const result = await rockPeopleTool.handle(
@@ -854,7 +862,9 @@ describe('rock_people tool', () => {
     });
 
     it('lists available statuses when a connectionStatus name cannot be resolved', async () => {
-      mockClient.get.mockResolvedValueOnce([{ Id: 1, Value: 'Member' }, { Id: 2, Value: 'Visitor' }]);
+      mockClient.get
+        .mockResolvedValueOnce([{ Id: 4 }]) // DefinedTypes lookup
+        .mockResolvedValueOnce([{ Id: 1, Value: 'Member' }, { Id: 2, Value: 'Visitor' }]);
 
       const result = await rockPeopleTool.handle(
         { action: 'filter', connectionStatus: 'NonExistentStatus' },
@@ -870,7 +880,9 @@ describe('rock_people tool', () => {
     });
 
     it('applies isActive via the resolved Active RecordStatus DefinedValue', async () => {
-      mockClient.get.mockResolvedValueOnce([{ Id: 3, Value: 'Active' }]);
+      mockClient.get
+        .mockResolvedValueOnce([{ Id: 12 }]) // DefinedTypes lookup
+        .mockResolvedValueOnce([{ Id: 3, Value: 'Active' }]);
       mockFilterPost(10, sampleRows);
 
       const result = await rockPeopleTool.handle(
@@ -951,6 +963,7 @@ describe('rock_people tool', () => {
             // Note: ConnectionStatusValue is null on v1 fallback
           },
         ]) // Rows query (OData)
+        .mockResolvedValueOnce([{ Id: 4 }]) // DefinedTypes lookup
         .mockResolvedValueOnce([
           { Id: 67, Value: 'Member' },
           { Id: 68, Value: 'Visitor' },

@@ -7,7 +7,7 @@ import { RockClient } from '../rock/client.js';
 import { quoteLinqString, quoteODataString, assertValidGuid } from '../rock/query.js';
 import { AuditLogger } from '../auth/audit.js';
 import { authorizeWrite } from '../auth/authorization.js';
-import { getDefinedValueMap } from '../rock/defined-values.js';
+import { getDefinedValueMap, resolveDefinedValueIdByName } from '../rock/defined-values.js';
 
 // Named constants
 const FAMILY_GROUP_TYPE_NAME = 'Family';
@@ -84,7 +84,7 @@ const readOnlyPeopleActions = [
     campusName: z.string().min(1).optional()
       .describe("Campus name (e.g. 'Manila'); resolved to an ID via discovery, case-insensitive."),
     connectionStatus: z.string().min(1).optional()
-      .describe("Connection status name (e.g. 'Member', 'Visitor'; case-insensitive) or numeric DefinedValue ID."),
+      .describe("Connection status name (e.g. 'New', 'Crowd', 'Core', 'Leader'; case-insensitive) or numeric DefinedValue ID."),
     isActive: z.coerce.boolean().optional()
       .describe('Filter by record status: true = Active records only, false = non-active only.'),
     countOnly: z.coerce.boolean().default(false)
@@ -222,14 +222,13 @@ async function resolvePersonAliasId(client: RockClient, ctx: OAuthRockContext, p
  */
 async function resolveMobilePhoneTypeId(client: RockClient, ctx: OAuthRockContext): Promise<number | null> {
   try {
-    // Try v1 OData first: filter by DefinedType.Value == 'Phone Type' and Value == 'Mobile'
-    const mobilePhoneTypes = await client.get<any[]>(
-      ctx,
-      `/api/DefinedValues?$filter=DefinedType/Value eq 'Phone Type' and Value eq 'Mobile'&$top=1`
-    );
-    if (mobilePhoneTypes && mobilePhoneTypes.length > 0) {
-      return mobilePhoneTypes[0].Id;
+    // Resolve via the shared two-step DefinedValue lookup (navigation-property
+    // filters like DefinedType/Value are rejected by Rock's v1 OData).
+    const mobileId = await resolveDefinedValueIdByName(client, ctx, 'Phone Type', 'Mobile');
+    if (mobileId) {
+      return mobileId;
     }
+    throw new Error('Phone Type/Mobile not resolvable by name');
   } catch {
     // Fallback: try by GUID
     try {
@@ -637,7 +636,8 @@ async function resolveCampusName(
 
 /**
  * Resolve a DefinedValue ID by DefinedType name and Value name.
- * Returns the numeric ID or null if not resolvable.
+ * Delegates to the shared two-step resolver: navigation-property filters
+ * like DefinedType/Name are rejected by Rock's v1 OData.
  */
 async function resolveDefinedValueId(
   client: RockClient,
@@ -645,25 +645,7 @@ async function resolveDefinedValueId(
   definedTypeName: string,
   valueName: string
 ): Promise<number | null> {
-  try {
-    const results = await client.get<any[]>(
-      ctx,
-      `/api/DefinedValues?$filter=DefinedType/Name eq ${quoteODataString(definedTypeName)} and Value eq ${quoteODataString(valueName)}&$top=1`
-    );
-    if (results && results.length > 0) return results[0].Id;
-  } catch {
-    // Fallback: try by substringof on DefinedType
-    try {
-      const results = await client.get<any[]>(
-        ctx,
-        `/api/DefinedValues?$filter=substringof(${quoteODataString(definedTypeName)}, DefinedType/Name) eq true and Value eq ${quoteODataString(valueName)}&$top=1`
-      );
-      if (results && results.length > 0) return results[0].Id;
-    } catch {
-      // Unable to resolve
-    }
-  }
-  return null;
+  return resolveDefinedValueIdByName(client, ctx, definedTypeName, valueName);
 }
 
 export const rockPeopleTool: GatewayTool = {
@@ -781,24 +763,16 @@ export const rockPeopleTool: GatewayTool = {
           if (/^\d+$/.test(connectionStatus)) {
             connectionStatusValueId = parseInt(connectionStatus, 10);
           } else {
-            let statuses: any[] = [];
-            try {
-              statuses = await rockClient.get<any[]>(
-                ctx,
-                `/api/DefinedValues?$filter=DefinedType/Value eq 'Connection Status'`
-              );
-            } catch {
-              // No status list available
-            }
+            const statusMap = await getDefinedValueMap(rockClient, ctx, 'Connection Status');
             const needle = connectionStatus.toLowerCase();
-            const found = (statuses || []).find((s: any) => String(s.Value).toLowerCase() === needle);
+            const found = [...statusMap.entries()].find(([, value]) => value.toLowerCase() === needle);
             if (!found) {
               return formatResponse(parsed.action, ctx, null, {
                 code: 'CONNECTION_STATUS_NOT_FOUND',
-                message: `No connection status matched '${connectionStatus}'. Available: ${(statuses || []).map((s: any) => s.Value).join(', ') || '(none found)'}. A numeric DefinedValue ID is also accepted.`,
+                message: `No connection status matched '${connectionStatus}'. Available: ${[...statusMap.values()].join(', ') || '(none found)'}. A numeric DefinedValue ID is also accepted.`,
               });
             }
-            connectionStatusValueId = found.Id;
+            connectionStatusValueId = found[0];
           }
         }
 

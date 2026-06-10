@@ -62,9 +62,20 @@ export async function getDefinedValueMap(
   if (cached) return cached;
 
   try {
+    // Two-step lookup: Rock's v1 OData rejects navigation-property filters
+    // like DefinedType/Value (400 "Could not find a property named
+    // 'DefinedType'" on Rock 17.7), so resolve the DefinedType ID first.
+    const types = await client.get<any[]>(
+      ctx,
+      `/api/DefinedTypes?$filter=Name eq ${quoteODataString(definedTypeName)}&$select=Id`
+    );
+    if (!types || types.length === 0) {
+      return new Map();
+    }
+
     const results = await client.get<any[]>(
       ctx,
-      `/api/DefinedValues?$filter=DefinedType/Value eq ${quoteODataString(definedTypeName)}`
+      `/api/DefinedValues?$filter=DefinedTypeId eq ${types[0].Id}&$select=Id,Value`
     );
 
     const map = new Map<number, string>();
@@ -82,4 +93,22 @@ export async function getDefinedValueMap(
     // Return empty map on error; do not cache failures
     return new Map();
   }
+}
+
+/**
+ * Resolve a single DefinedValue ID by DefinedType name and value name
+ * (case-insensitive). Returns null when not found.
+ */
+export async function resolveDefinedValueIdByName(
+  client: RockClient,
+  ctx: OAuthRockContext,
+  definedTypeName: string,
+  valueName: string
+): Promise<number | null> {
+  const map = await getDefinedValueMap(client, ctx, definedTypeName);
+  const needle = valueName.toLowerCase();
+  for (const [id, value] of map.entries()) {
+    if (value.toLowerCase() === needle) return id;
+  }
+  return null;
 }

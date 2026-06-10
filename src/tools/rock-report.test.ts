@@ -131,12 +131,18 @@ describe('rock_report tool', () => {
         ];
       }
       if (path.includes('Connection Status')) {
+        return [{ Id: 40 }]; // DefinedTypes lookup
+      }
+      if (path.includes('Record Status')) {
+        return [{ Id: 12 }]; // DefinedTypes lookup
+      }
+      if (path.includes('DefinedTypeId eq 40')) {
         return [
           { Id: 67, Value: 'Member' },
           { Id: 68, Value: 'Visitor' },
         ];
       }
-      if (path.includes('Record Status')) {
+      if (path.includes('DefinedTypeId eq 12')) {
         return [
           { Id: 3, Value: 'Active' },
           { Id: 4, Value: 'Inactive' },
