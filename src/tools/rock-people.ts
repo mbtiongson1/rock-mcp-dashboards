@@ -72,11 +72,20 @@ const readOnlyPeopleActions = [
   }),
   z.object({
     action: z.literal('filter'),
-    campusId: z.coerce.number().optional(),
-    connectionStatus: z.string().optional(),
-    isActive: z.coerce.boolean().optional(),
-    top: z.coerce.number().int().positive().max(500).default(200),
-    countOnly: z.coerce.boolean().default(false),
+    campusId: z.coerce.number().int().positive().optional()
+      .describe('Campus ID to filter by. Use campusName instead if you only know the name.'),
+    campusName: z.string().min(1).optional()
+      .describe("Campus name (e.g. 'Manila'); resolved to an ID via discovery, case-insensitive."),
+    connectionStatus: z.string().min(1).optional()
+      .describe("Connection status name (e.g. 'Member', 'Visitor'; case-insensitive) or numeric DefinedValue ID."),
+    isActive: z.coerce.boolean().optional()
+      .describe('Filter by record status: true = Active records only, false = non-active only.'),
+    countOnly: z.coerce.boolean().default(false)
+      .describe('Return only the true total count without fetching rows.'),
+    limit: z.coerce.number().int().positive().max(500).default(50)
+      .describe('Page size (max 500). The response always includes the true total.'),
+    offset: z.coerce.number().int().nonnegative().default(0)
+      .describe('Pagination offset; combine with limit to page through all matches.'),
   }),
 ] as const;
 
@@ -643,7 +652,7 @@ export const rockPeopleTool: GatewayTool = {
     return rockPeopleSchema;
   },
   descriptionForMode(_mode: McpMode): string {
-    return 'Directory lookups, profiles, and relationship workflows for people in Rock RMS.';
+    return "Directory lookups, profiles, and relationship workflows for people in Rock RMS. Use 'filter' to list or count people by campus or connection status with true totals and pagination.";
   },
   async handle(args: any, _extra: any, ctx: OAuthRockContext): Promise<McpToolResult> {
     const parsed = rockPeopleSchema.parse(args);
@@ -683,6 +692,189 @@ export const rockPeopleTool: GatewayTool = {
         return formatResponse(parsed.action, ctx, null, {
           code: 'FIND_ERROR',
           message: `Failed to find people: ${err.message}`,
+        });
+      }
+    }
+
+    if (parsed.action === 'filter') {
+      const { campusId, campusName, connectionStatus, isActive, countOnly, limit, offset } = parsed;
+      const discoveryService = getDiscoveryService(ctx);
+
+      if (!campusId && !campusName && !connectionStatus && isActive === undefined) {
+        return formatResponse(parsed.action, ctx, null, {
+          code: 'FILTER_REQUIRED',
+          message: 'Provide at least one filter: campusId, campusName, connectionStatus, or isActive.',
+        });
+      }
+
+      try {
+        // Resolve campus (by ID or name) against the discovery map, falling
+        // back to the Campuses API so name resolution still works without discovery.
+        let campus: { id: number; name: string | null } | null = null;
+        if (campusId || campusName) {
+          let campuses: Array<{ id: number; name: string }> = [];
+          try {
+            if (discoveryService) {
+              const map = await discoveryService.getMap(ctx);
+              campuses = map.campuses || [];
+            }
+          } catch {
+            // Tolerate missing discovery
+          }
+          if (campuses.length === 0) {
+            try {
+              const raw = await rockClient.get<any[]>(ctx, '/api/Campuses');
+              campuses = (raw || []).map((c: any) => ({ id: c.Id, name: c.Name }));
+            } catch {
+              // No campus list available
+            }
+          }
+
+          if (campusId) {
+            const found = campuses.find((c) => c.id === campusId);
+            campus = { id: campusId, name: found ? found.name : null };
+          } else if (campusName) {
+            const needle = campusName.toLowerCase();
+            const found =
+              campuses.find((c) => c.name.toLowerCase() === needle) ||
+              campuses.find((c) => c.name.toLowerCase().includes(needle));
+            if (!found) {
+              return formatResponse(parsed.action, ctx, null, {
+                code: 'CAMPUS_NOT_FOUND',
+                message: `No campus matched '${campusName}'. Available campuses: ${campuses.map((c) => c.name).join(', ') || '(none discovered)'}.`,
+              });
+            }
+            campus = { id: found.id, name: found.name };
+          }
+        }
+
+        // Resolve connection status (name, case-insensitive, or numeric DefinedValue ID)
+        let connectionStatusValueId: number | null = null;
+        if (connectionStatus) {
+          if (/^\d+$/.test(connectionStatus)) {
+            connectionStatusValueId = parseInt(connectionStatus, 10);
+          } else {
+            let statuses: any[] = [];
+            try {
+              statuses = await rockClient.get<any[]>(
+                ctx,
+                `/api/DefinedValues?$filter=DefinedType/Value eq 'Connection Status'`
+              );
+            } catch {
+              // No status list available
+            }
+            const needle = connectionStatus.toLowerCase();
+            const found = (statuses || []).find((s: any) => String(s.Value).toLowerCase() === needle);
+            if (!found) {
+              return formatResponse(parsed.action, ctx, null, {
+                code: 'CONNECTION_STATUS_NOT_FOUND',
+                message: `No connection status matched '${connectionStatus}'. Available: ${(statuses || []).map((s: any) => s.Value).join(', ') || '(none found)'}. A numeric DefinedValue ID is also accepted.`,
+              });
+            }
+            connectionStatusValueId = found.Id;
+          }
+        }
+
+        // Resolve the "Active" RecordStatus DefinedValue for the isActive filter
+        let warning: string | undefined;
+        let activeRecordStatusId: number | null = null;
+        if (isActive !== undefined) {
+          activeRecordStatusId = await resolveDefinedValueId(rockClient, ctx, 'Record Status', 'Active');
+          if (activeRecordStatusId === null) {
+            warning = 'isActive filter was not applied: could not resolve the "Active" RecordStatus DefinedValue.';
+          }
+        }
+
+        const linqClauses: string[] = [];
+        const odataClauses: string[] = [];
+        if (campus) {
+          linqClauses.push(`PrimaryCampusId == ${campus.id}`);
+          odataClauses.push(`PrimaryCampusId eq ${campus.id}`);
+        }
+        if (connectionStatusValueId) {
+          linqClauses.push(`ConnectionStatusValueId == ${connectionStatusValueId}`);
+          odataClauses.push(`ConnectionStatusValueId eq ${connectionStatusValueId}`);
+        }
+        if (isActive !== undefined && activeRecordStatusId !== null) {
+          linqClauses.push(isActive
+            ? `RecordStatusValueId == ${activeRecordStatusId}`
+            : `RecordStatusValueId != ${activeRecordStatusId}`);
+          odataClauses.push(isActive
+            ? `RecordStatusValueId eq ${activeRecordStatusId}`
+            : `RecordStatusValueId ne ${activeRecordStatusId}`);
+        }
+        // If every requested filter failed to resolve, error out rather than
+        // silently counting the whole database.
+        if (linqClauses.length === 0) {
+          return formatResponse(parsed.action, ctx, null, {
+            code: 'FILTER_UNRESOLVED',
+            message: warning ?? 'No filter could be applied.',
+          });
+        }
+
+        const where = linqClauses.join(' && ');
+        const odataFilter = odataClauses.join(' and ');
+
+        // True total via count-only query (not capped by the page size)
+        let total: number;
+        try {
+          const countResult = await rockClient.post(ctx, '/api/v2/models/people/search', {
+            Where: where,
+            IsCountOnly: true,
+          });
+          total = Number(countResult);
+        } catch {
+          const all = await rockClient.get<any[]>(
+            ctx,
+            `/api/People?$filter=${encodeURIComponent(odataFilter)}&$select=Id`
+          );
+          total = (all || []).length;
+          warning = 'Fell back to REST v1 for count';
+        }
+
+        const filters: any = {};
+        if (campus) filters.campus = campus;
+        if (connectionStatus) filters.connectionStatus = connectionStatus;
+
+        if (countOnly) {
+          return formatResponse(parsed.action, ctx, { total, ...filters }, undefined, warning);
+        }
+
+        let rows: any[] = [];
+        try {
+          rows = await rockClient.post(ctx, '/api/v2/models/people/search', {
+            Where: where,
+            Offset: offset,
+            Limit: limit,
+          });
+        } catch {
+          rows = await rockClient.get<any[]>(
+            ctx,
+            `/api/People?$filter=${encodeURIComponent(odataFilter)}&$top=${limit}&$skip=${offset}`
+          );
+          warning = warning ? `${warning}; fell back to REST v1 for rows` : 'Fell back to REST v1 for rows';
+        }
+
+        const results = (rows || []).map((p: any) => ({
+          id: p.Id,
+          guid: p.Guid,
+          name: `${p.NickName || p.FirstName || ''} ${p.LastName || ''}`.trim(),
+          campusId: p.PrimaryCampusId || p.CampusId,
+          connectionStatus: p.ConnectionStatusValue,
+        }));
+
+        return formatResponse(parsed.action, ctx, {
+          total,
+          offset,
+          limit,
+          count: results.length,
+          ...filters,
+          results,
+        }, undefined, warning);
+      } catch (err: any) {
+        return formatResponse(parsed.action, ctx, null, {
+          code: 'FILTER_ERROR',
+          message: `Failed to filter people: ${err.message}`,
         });
       }
     }
@@ -1519,135 +1711,6 @@ export const rockPeopleTool: GatewayTool = {
         return formatResponse(parsed.action, ctx, null, {
           code: 'CREATE_TASK_ERROR',
           message: err.message,
-        });
-      }
-    }
-
-    if (parsed.action === 'filter') {
-      const { campusId, connectionStatus, isActive, top, countOnly } = parsed;
-      try {
-        const warnings: string[] = [];
-
-        // Build filter clauses
-        const clauses: string[] = [];
-        const odataClauses: string[] = [];
-
-        // Campus filter
-        if (campusId !== undefined) {
-          clauses.push(`PrimaryCampusId == ${campusId}`);
-          odataClauses.push(`PrimaryCampusId eq ${campusId}`);
-        }
-
-        // Connection status filter
-        let resolvedConnectionStatusId: number | null = null;
-        if (connectionStatus !== undefined) {
-          if (/^\d+$/.test(connectionStatus)) {
-            resolvedConnectionStatusId = parseInt(connectionStatus, 10);
-          } else {
-            resolvedConnectionStatusId = await resolveDefinedValueId(rockClient, ctx, 'Connection Status', connectionStatus);
-            if (resolvedConnectionStatusId === null) {
-              return formatResponse(parsed.action, ctx, null, {
-                code: 'CONNECTION_STATUS_UNRESOLVED',
-                message: `Could not resolve connection status "${connectionStatus}" to a DefinedValue ID. Check the name or provide a numeric ID.`,
-              });
-            }
-          }
-          clauses.push(`ConnectionStatusValueId == ${resolvedConnectionStatusId}`);
-          odataClauses.push(`ConnectionStatusValueId eq ${resolvedConnectionStatusId}`);
-        }
-
-        // isActive filter: resolve the "Active" RecordStatus DefinedValue ID
-        if (isActive !== undefined) {
-          const activeRecordStatusId = await resolveDefinedValueId(rockClient, ctx, 'Record Status', 'Active');
-          if (activeRecordStatusId === null) {
-            warnings.push('isActive filter could not be applied: could not resolve the "Active" RecordStatus DefinedValue ID.');
-          } else {
-            if (isActive) {
-              clauses.push(`RecordStatusValueId == ${activeRecordStatusId}`);
-              odataClauses.push(`RecordStatusValueId eq ${activeRecordStatusId}`);
-            } else {
-              clauses.push(`RecordStatusValueId != ${activeRecordStatusId}`);
-              odataClauses.push(`RecordStatusValueId ne ${activeRecordStatusId}`);
-            }
-          }
-        }
-
-        const whereClause = clauses.join(' && ');
-        const odataFilter = odataClauses.join(' and ');
-
-        // Try v2 first
-        let results: any[] | null = null;
-        let v2Count: number | null = null;
-        try {
-          const v2Payload: any = {
-            Limit: top,
-          };
-          if (whereClause) v2Payload.Where = whereClause;
-          if (countOnly) v2Payload.IsCountOnly = true;
-
-          const v2Result: any = await rockClient.post(ctx, '/api/v2/models/people/search', v2Payload);
-
-          if (countOnly) {
-            // v2 returns count as a number when IsCountOnly is true
-            if (typeof v2Result === 'number') {
-              v2Count = v2Result;
-            } else if (Array.isArray(v2Result)) {
-              v2Count = v2Result.length;
-            } else if (v2Result && typeof v2Result.count === 'number') {
-              v2Count = v2Result.count;
-            } else {
-              v2Count = Array.isArray(v2Result) ? v2Result.length : 0;
-            }
-          } else {
-            results = Array.isArray(v2Result) ? v2Result : [];
-          }
-        } catch (_v2Err) {
-          // Fallback to v1 OData
-          try {
-            const url = `/api/People?$top=${top}${odataFilter ? `&$filter=${encodeURIComponent(odataFilter)}` : ''}`;
-            const v1Result = await rockClient.get<any[]>(ctx, url);
-            results = Array.isArray(v1Result) ? v1Result : [];
-            if (countOnly) {
-              v2Count = results.length;
-              results = null;
-            }
-          } catch (v1Err: any) {
-            return formatResponse(parsed.action, ctx, null, {
-              code: 'FILTER_ERROR',
-              message: `Failed to filter people: ${v1Err.message}`,
-            });
-          }
-        }
-
-        if (countOnly) {
-          const response: any = { count: v2Count ?? 0 };
-          if (warnings.length > 0) response.warnings = warnings;
-          return formatResponse(parsed.action, ctx, response);
-        }
-
-        // Project results to privacy-safe shape
-        const safeResults = (results ?? []).map((p: any) => {
-          const item: any = {
-            id: p.Id,
-            guid: p.Guid,
-            name: `${p.NickName || p.FirstName || ''} ${p.LastName || ''}`.trim(),
-          };
-          if (p.PrimaryCampusId) item.campus = { id: p.PrimaryCampusId };
-          if (p.ConnectionStatusValue) {
-            item.connectionStatus = p.ConnectionStatusValue;
-          } else if (p.ConnectionStatusValueId) {
-            item.connectionStatus = p.ConnectionStatusValueId;
-          }
-          return item;
-        });
-
-        const response: any = { people: safeResults, total: safeResults.length };
-        if (warnings.length > 0) response.warnings = warnings;
-        return formatResponse(parsed.action, ctx, response);
-      } catch (err: any) {
-        return formatResponse(parsed.action, ctx, null, {
-          code: 'FILTER_ERROR',
-          message: `Failed to filter people: ${err.message}`,
         });
       }
     }

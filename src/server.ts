@@ -1,6 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { allTools } from './tools/index.js';
+import { registerGatewayTools } from './mcp/register-tools.js';
 import { registerReportViewerApp } from './mcp/apps.js';
 import { RockClientImpl } from './rock/client.js';
 import { DiscoveryService } from './discovery/discovery-service.js';
@@ -65,36 +65,7 @@ if (isStdio) {
   );
 
   // Register all tools in readwrite mode for developer accessibility
-  for (const tool of allTools) {
-    const schema = tool.schemaForMode('readwrite', devCtx.scopes);
-    if (schema) {
-      // Per MCP Apps spec (ext-apps v0.3.0), tools that open an MCP App
-      // must advertise the app resource URI via _meta.ui.resourceUri.
-      const baseConfig = {
-        title: tool.title,
-        description: tool.descriptionForMode('readwrite'),
-        inputSchema: schema,
-      };
-      const config = tool.appResourceUri
-        ? {
-            ...baseConfig,
-            _meta: {
-              ui: {
-                resourceUri: tool.appResourceUri,
-              },
-            },
-          }
-        : baseConfig;
-
-      server.registerTool(
-        tool.name,
-        config,
-        async (args: any, extra: any) => {
-          return await tool.handle(args, extra, devCtx) as any;
-        }
-      );
-    }
-  }
+  registerGatewayTools(server, 'readwrite', devCtx);
 
   registerReportViewerApp(server);
 
