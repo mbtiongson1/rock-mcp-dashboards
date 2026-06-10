@@ -1,6 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
-import { resolveMode, ScopeError, EndpointKind } from '../mcp/modes.js';
+import { resolveMode, ScopeError, PersonResolutionError, EndpointKind } from '../mcp/modes.js';
 import { registerGatewayTools } from '../mcp/register-tools.js';
 import { registerReportViewerApp } from '../mcp/apps.js';
 import { getRockGuideText } from '../mcp/guide-text.js';
@@ -8,6 +8,9 @@ import { getAppContext, CreateAppContextOptions } from './app-context.js';
 import { validateOAuthContext, jsonCors, withCors } from './oauth-validate.js';
 import { resolveServerOverride } from './server-override.js';
 import type { OAuthRockContext } from './oauth.js';
+import { AuditLogger } from '../auth/audit.js';
+
+const auditLogger = new AuditLogger();
 
 /**
  * Framework-agnostic MCP POST handler. Validates the OAuth bearer token, builds
@@ -60,6 +63,16 @@ export async function handleMcpPost(
     });
     ctx.rockUser = resolvedUser;
 
+    // Defense-in-depth: MCP access requires the OAuth identity to map to a
+    // real Rock person, regardless of token scopes.
+    if (!resolvedUser.personId) {
+      const email = ctx.oauth.email || ctx.oauth.subject;
+      throw new PersonResolutionError(
+        `Your account (${email}) is not linked to a Rock person record. Ask a Rock admin to add this email to your person record.`,
+        email
+      );
+    }
+
     // Resolve mode (throws ScopeError on insufficient scope)
     const mode = resolveMode(endpointKind, ctx);
     ctx.mode = mode;
@@ -90,6 +103,16 @@ export async function handleMcpPost(
     return withCors(response);
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Internal server error';
+    if (err instanceof PersonResolutionError) {
+      auditLogger.log(ctx, {
+        tool: 'mcp',
+        action: 'resolveUser',
+        outcome: 'denied',
+        errorCode: 'PERSON_NOT_RESOLVED',
+        reason: `Person not resolved for email: ${err.email || 'unknown'}`,
+      });
+      return jsonCors({ error: message }, { status: 403 });
+    }
     if (err instanceof ScopeError) {
       return jsonCors({ error: message }, { status: 403 });
     }

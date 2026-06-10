@@ -1,9 +1,11 @@
-import { afterEach, describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import type { OAuthTokenVerifier } from '@modelcontextprotocol/sdk/server/auth/provider.js';
 import { handleMcpPost } from '../../src/http/mcp-route.js';
 import { resetAppContextForTests, CreateAppContextOptions } from '../../src/http/app-context.js';
 import type { Auth0OAuthConfig, Auth0OAuthMetadata } from '../../src/http/oauth.js';
 import type { RockClient } from '../../src/rock/client.js';
+import { AuditLogger } from '../../src/auth/audit.js';
+import type { RockUserResolver } from '../../src/auth/rock-user-resolver.js';
 
 const oauthConfig: Auth0OAuthConfig = {
   issuer: 'https://auth.example.com/',
@@ -46,6 +48,15 @@ class FakeRockClient implements RockClient {
   async delete<T>(): Promise<T> { return {} as T; }
 }
 
+const stubResolver = {
+  resolve: async () => ({
+    personId: 100,
+    personGuid: 'a0000000-0000-0000-0000-000000000100',
+    personAliasId: 100,
+    isRsrAdmin: false,
+  }),
+} as unknown as RockUserResolver;
+
 function appOptions(verifier: OAuthTokenVerifier): CreateAppContextOptions {
   return {
     oauthConfig,
@@ -58,6 +69,7 @@ function appOptions(verifier: OAuthTokenVerifier): CreateAppContextOptions {
       AUTH0_MANAGEMENT_CLIENT_SECRET: 'test-mgmt-secret',
     },
     rockClientFactory: () => new FakeRockClient(),
+    rockUserResolver: stubResolver,
   };
 }
 
@@ -219,6 +231,75 @@ describe('handleMcpPost', () => {
     );
     const response = await handleMcpPost(request, 'mcp', appOptions(verifierWithScopes(['read', 'write'])));
     expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
+  });
+
+  describe('Rock person requirement', () => {
+    it('returns 403 when resolver returns no personId', async () => {
+      const unknownUserResolver = {
+        resolve: async () => ({
+          isRsrAdmin: false,
+        }),
+      } as unknown as RockUserResolver;
+
+      const options = appOptions(verifierWithScopes(['read']));
+      options.rockUserResolver = unknownUserResolver;
+
+      const request = mcpRequest(
+        { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} },
+        { Authorization: 'Bearer valid-token' }
+      );
+      const response = await handleMcpPost(request, 'mcp', options);
+
+      expect(response.status).toBe(403);
+      const json = JSON.parse(await readBody(response));
+      expect(json.error).toMatch(/not linked to a Rock person record/);
+      expect(json.error).toContain('person@example.com');
+    });
+
+    it('logs denial with PERSON_NOT_RESOLVED error code when person not resolved', async () => {
+      const unknownUserResolver = {
+        resolve: async () => ({
+          isRsrAdmin: false,
+        }),
+      } as unknown as RockUserResolver;
+
+      const options = appOptions(verifierWithScopes(['read']));
+      options.rockUserResolver = unknownUserResolver;
+
+      const logSpy = vi.spyOn(AuditLogger.prototype, 'log');
+
+      const request = mcpRequest(
+        { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} },
+        { Authorization: 'Bearer valid-token' }
+      );
+      await handleMcpPost(request, 'mcp', options);
+
+      expect(logSpy).toHaveBeenCalled();
+      const logCall = logSpy.mock.calls[0];
+      expect(logCall[1]).toMatchObject({
+        tool: 'mcp',
+        action: 'resolveUser',
+        outcome: 'denied',
+        errorCode: 'PERSON_NOT_RESOLVED',
+      });
+      expect(logCall[1].reason).toContain('person@example.com');
+
+      logSpy.mockRestore();
+    });
+
+    it('returns 200 tools/list when person is resolved (regression)', async () => {
+      const request = mcpRequest(
+        { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} },
+        { Authorization: 'Bearer valid-token' }
+      );
+      const response = await handleMcpPost(request, 'mcp', appOptions(verifierWithScopes(['read'])));
+
+      expect(response.status).toBe(200);
+      const text = await readBody(response);
+      const json = parseMcpBody(text);
+      expect(json.result?.tools).toBeInstanceOf(Array);
+      expect(json.result.tools.length).toBeGreaterThan(0);
+    });
   });
 });
 
