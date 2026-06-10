@@ -31,6 +31,28 @@ describe('rock_report tool', () => {
     } as unknown as OAuthRockContext;
   });
 
+  it('runs a report via its DataView when the report has one (Rock 17.x)', async () => {
+    mockClient.get = vi.fn().mockImplementation(async (_ctx, path) => {
+      if (path === '/api/Reports/42') {
+        return { Id: 42, Name: 'Pending Individuals', DataViewId: 4, EntityTypeId: 15 };
+      }
+      if (path === '/api/EntityTypes/15') {
+        return { Id: 15, Name: 'Rock.Model.Person' };
+      }
+      if (path.startsWith('/api/People/DataView/4')) {
+        return [{ Id: 7228, FirstName: 'Sam' }];
+      }
+      throw new Error(`Unexpected path ${path}`);
+    });
+
+    const result = await rockReportTool.handle({ action: 'run', reportId: 42, limit: 10 }, null, mockCtx);
+    const response = JSON.parse(result.content[0].text!);
+
+    expect(response.ok).toBe(true);
+    expect(response.result.rowCount).toBe(1);
+    expect(mockClient.get).toHaveBeenCalledWith(mockCtx, '/api/People/DataView/4?$top=10');
+  });
+
   it('should run report and return preview & datasetId', async () => {
     mockClient.get.mockResolvedValue([
       { Id: 1, Name: 'Active Members Report', Category: { Name: 'Ministry' } },

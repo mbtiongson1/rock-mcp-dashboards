@@ -16,18 +16,18 @@ const MAX_GROUPS_ANALYZED = 100;
 const rockMinistrySchema = z.discriminatedUnion('action', [
   z.object({
     action: z.literal('groups'),
-    kind: z.enum(['connectGroup', 'ministryTeam']),
+    kind: z.enum(['connectGroup', 'ministryTeam']).describe('Which group category to list.'),
     limit: z.coerce.number().int().positive().max(100).default(50),
   }),
   z.object({
     action: z.literal('groupMembers'),
-    groupId: z.coerce.number(),
+    groupId: z.coerce.number().describe("Rock group ID (from the 'groups' action)."),
     limit: z.coerce.number().int().positive().max(200).default(50),
   }),
   z.object({
     action: z.literal('connectGroupHealth'),
-    campus: z.string().optional(),
-    ageGroup: z.string().optional(),
+    campus: z.string().optional().describe("Campus name, e.g. 'Manila'."),
+    ageGroup: z.string().optional().describe('Age group: Kids, Youth, Young Adults, Adults, or Seasoned.'),
     windowWeeks: z.coerce.number().default(12),
     groupTypeId: z.coerce.number().optional(),
   }),
@@ -43,37 +43,37 @@ const rockMinistrySchema = z.discriminatedUnion('action', [
     personId: z.coerce.number(),
     roleId: z.coerce.number().optional(),
     status: z.enum(['Active', 'Inactive']).default('Active'),
-    dryRun: z.boolean().default(true),
-    commit: z.boolean().default(false),
-    reason: z.string().min(1),
+    dryRun: z.boolean().default(true).describe('Preview-only by default. Set dryRun:false AND commit:true to apply.'),
+    commit: z.boolean().default(false).describe('Must be true (with dryRun:false) to actually write.'),
+    reason: z.string().min(1).describe('Required justification for the change; recorded in the audit log.'),
   }),
   z.object({
     action: z.literal('removeGroupMember'),
     groupMemberId: z.coerce.number().optional(),
     groupId: z.coerce.number().optional(),
     personId: z.coerce.number().optional(),
-    dryRun: z.boolean().default(true),
-    commit: z.boolean().default(false),
-    reason: z.string().min(1),
+    dryRun: z.boolean().default(true).describe('Preview-only by default. Set dryRun:false AND commit:true to apply.'),
+    commit: z.boolean().default(false).describe('Must be true (with dryRun:false) to actually write.'),
+    reason: z.string().min(1).describe('Required justification for the change; recorded in the audit log.'),
   }),
   z.object({
     action: z.literal('addAttendance'),
     groupId: z.coerce.number(),
     personId: z.coerce.number(),
-    occurrenceDate: z.string().optional(), // YYYY-MM-DD
+    occurrenceDate: z.string().optional().describe('Date in YYYY-MM-DD format; defaults to today.'),
     didAttend: z.boolean().default(true),
-    dryRun: z.boolean().default(true),
-    commit: z.boolean().default(false),
-    reason: z.string().min(1),
+    dryRun: z.boolean().default(true).describe('Preview-only by default. Set dryRun:false AND commit:true to apply.'),
+    commit: z.boolean().default(false).describe('Must be true (with dryRun:false) to actually write.'),
+    reason: z.string().min(1).describe('Required justification for the change; recorded in the audit log.'),
   }),
   z.object({
     action: z.literal('updateServingRoster'),
     groupMemberId: z.coerce.number(),
     roleId: z.coerce.number().optional(),
     status: z.enum(['Active', 'Inactive']).optional(),
-    dryRun: z.boolean().default(true),
-    commit: z.boolean().default(false),
-    reason: z.string().min(1),
+    dryRun: z.boolean().default(true).describe('Preview-only by default. Set dryRun:false AND commit:true to apply.'),
+    commit: z.boolean().default(false).describe('Must be true (with dryRun:false) to actually write.'),
+    reason: z.string().min(1).describe('Required justification for the change; recorded in the audit log.'),
   }),
 ]);
 
@@ -87,7 +87,7 @@ export const rockMinistryTool: GatewayTool = {
       return z.discriminatedUnion('action', [
         z.object({
           action: z.literal('groups'),
-          kind: z.enum(['connectGroup', 'ministryTeam']),
+          kind: z.enum(['connectGroup', 'ministryTeam']).describe('Which group category to list.'),
           limit: z.coerce.number().int().positive().max(100).default(50),
         }),
         z.object({
@@ -97,8 +97,8 @@ export const rockMinistryTool: GatewayTool = {
         }),
         z.object({
           action: z.literal('connectGroupHealth'),
-          campus: z.string().optional(),
-          ageGroup: z.string().optional(),
+          campus: z.string().optional().describe("Campus name, e.g. 'Manila'."),
+          ageGroup: z.string().optional().describe('Age group: Kids, Youth, Young Adults, Adults, or Seasoned.'),
           windowWeeks: z.coerce.number().default(12),
           groupTypeId: z.coerce.number().optional(),
         }),

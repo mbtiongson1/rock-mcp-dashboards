@@ -10,7 +10,7 @@ export const rockUsageTool: GatewayTool = {
     return z.object({});
   },
   descriptionForMode(_mode: McpMode): string {
-    return 'Exposes the Favor Church operating rules and guidelines for interacting with Rock RMS.';
+    return 'Returns the Favor Church operating rules and conventions for the Rock tools. Call this first (no arguments) if you are unsure which tool or action to use.';
   },
   async handle(_args: any, _extra: any, _ctx: OAuthRockContext): Promise<McpToolResult> {
     return {

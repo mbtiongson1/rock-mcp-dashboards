@@ -918,6 +918,39 @@ describe('rock_people tool', () => {
       );
     });
 
+    it('accepts lenient person references (bare string, numeric, stringified JSON)', async () => {
+      // Bare name string is treated as { search }
+      mockClient.post.mockResolvedValue([{ Id: 9, Guid: 'g-9', FirstName: 'Alex', LastName: 'Santos' }]);
+      let result = await rockPeopleTool.handle(
+        { action: 'profile', person: 'Alex Santos' },
+        null,
+        mockCtx
+      );
+      let response = JSON.parse(result.content[0].text!);
+      expect(response.ok).toBe(true);
+      expect(response.result.person.name).toBe('Alex Santos');
+
+      // Numeric string is treated as { id }
+      mockClient.get.mockResolvedValue({ Id: 9, Guid: 'g-9', FirstName: 'Alex', LastName: 'Santos' });
+      result = await rockPeopleTool.handle(
+        { action: 'profile', person: '9' },
+        null,
+        mockCtx
+      );
+      response = JSON.parse(result.content[0].text!);
+      expect(response.ok).toBe(true);
+
+      // JSON-stringified object is parsed (common LLM-client failure mode)
+      result = await rockPeopleTool.handle(
+        { action: 'profile', person: '{"search": "Alex Santos"}' },
+        null,
+        mockCtx
+      );
+      response = JSON.parse(result.content[0].text!);
+      expect(response.ok).toBe(true);
+      expect(response.result.person.name).toBe('Alex Santos');
+    });
+
     it('is available in readonly mode', async () => {
       const schema = rockPeopleTool.schemaForMode('readonly', new Set(['read']));
       expect(schema).not.toBeNull();

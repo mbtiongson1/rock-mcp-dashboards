@@ -8,6 +8,39 @@ import { RockClient } from '../rock/client.js';
 import { StoredDataset } from './dataset-store.js';
 import { REPORT_VIEWER_URI } from '../mcp/apps.js';
 
+/**
+ * Map a Rock entity class name (e.g. 'Rock.Model.Person') to its REST v1
+ * route segment (e.g. 'People').
+ */
+function entityNameToRoute(entityClassName: string): string {
+  const name = entityClassName.split('.').pop() || entityClassName;
+  if (name === 'Person') return 'People';
+  if (name === 'Campus') return 'Campuses';
+  if (name.endsWith('s')) return name;
+  return `${name}s`;
+}
+
+/**
+ * Execute a report's underlying DataView: GET /api/{EntityPlural}/DataView/{id}.
+ * Throws if the report has no DataView or the entity type cannot be resolved.
+ */
+async function runReportViaDataView(
+  rockClient: RockClient,
+  ctx: OAuthRockContext,
+  reportMeta: any,
+  limit: number
+): Promise<any[]> {
+  const dataViewId = reportMeta?.DataViewId;
+  const entityTypeId = reportMeta?.EntityTypeId;
+  if (!dataViewId || !entityTypeId) {
+    throw new Error('Report has no DataViewId/EntityTypeId.');
+  }
+  const entityType = await rockClient.get<any>(ctx, `/api/EntityTypes/${entityTypeId}`);
+  const route = entityNameToRoute(entityType?.Name || '');
+  const rows = await rockClient.get<any[]>(ctx, `/api/${route}/DataView/${dataViewId}?$top=${limit}`);
+  return rows || [];
+}
+
 const rockReportSchema = z.discriminatedUnion('action', [
   z.object({
     action: z.literal('list'),
@@ -16,22 +49,22 @@ const rockReportSchema = z.discriminatedUnion('action', [
   }),
   z.object({
     action: z.literal('run'),
-    reportId: z.coerce.number(),
+    reportId: z.coerce.number().describe("Report ID from the 'list' action."),
     limit: z.coerce.number().int().positive().max(500).default(50),
   }),
   z.object({
     action: z.literal('summary'),
-    datasetId: z.string(),
+    datasetId: z.string().describe("Dataset ID returned by the 'run' action (e.g. 'rpt_...')."),
     includeRows: z.boolean().default(false),
   }),
   z.object({
     action: z.literal('export'),
-    datasetId: z.string(),
+    datasetId: z.string().describe("Dataset ID returned by the 'run' action (e.g. 'rpt_...')."),
     format: z.enum(['csv', 'json']).default('csv'),
   }),
   z.object({
     action: z.literal('app'),
-    datasetId: z.string(),
+    datasetId: z.string().describe("Dataset ID returned by the 'run' action (e.g. 'rpt_...')."),
   }),
 ]);
 
@@ -82,7 +115,7 @@ export const rockReportTool: GatewayTool = {
     }
 
     if (parsed.action === 'run') {
-      const { reportId } = parsed;
+      const { reportId, limit } = parsed;
       try {
         if (!datasetStore) {
           throw new Error('Dataset store is not initialized.');
@@ -91,9 +124,18 @@ export const rockReportTool: GatewayTool = {
         // Fetch report metadata first to get name
         const reportMeta = await rockClient.get<any>(ctx, `/api/Reports/${reportId}`);
 
-        // Run the report using GET /api/Reports/run/{id}
-        const rows = await rockClient.get<any[]>(ctx, `/api/Reports/run/${reportId}`);
-        
+        // Run the report. /api/Reports/run/{id} does not exist on Rock 17.x
+        // (404 "The OData path is invalid"), so prefer executing the report's
+        // underlying DataView via /api/{EntityPlural}/DataView/{dataViewId},
+        // keeping the legacy endpoint as a fallback for other versions.
+        let rows: any[];
+        try {
+          rows = await runReportViaDataView(rockClient, ctx, reportMeta, limit);
+        } catch {
+          rows = await rockClient.get<any[]>(ctx, `/api/Reports/run/${reportId}?$top=${limit}`);
+          rows = (rows || []).slice(0, limit);
+        }
+
         // Expose columns dynamically
         const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
 

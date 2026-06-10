@@ -12,63 +12,69 @@ import { authorizeWrite } from '../auth/authorization.js';
 const FAMILY_GROUP_TYPE_NAME = 'Family';
 const ATTENDANCE_REGULAR_RATIO = 0.5; // >= 50% of weeks => 'Regular'
 
+/**
+ * Person reference accepted by read actions. Liberal in what it accepts so
+ * first-time agent calls succeed: a plain object ({ id | guid | search }), a
+ * bare number/numeric string (treated as id), a name string (treated as
+ * search), or a JSON-stringified object (a common LLM-client failure mode).
+ */
+const personRefSchema = z.preprocess(
+  (value) => {
+    if (typeof value === 'number') return { id: value };
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (/^\d+$/.test(trimmed)) return { id: Number(trimmed) };
+      if (trimmed.startsWith('{')) {
+        try {
+          return JSON.parse(trimmed);
+        } catch {
+          return { search: trimmed };
+        }
+      }
+      return { search: trimmed };
+    }
+    return value;
+  },
+  z.object({
+    id: z.coerce.number().optional().describe('Rock person ID.'),
+    guid: z.string().optional().describe('Rock person GUID.'),
+    search: z.string().optional().describe("Full or partial name, e.g. 'Alex Santos'."),
+  })
+).describe("Who to look up: { id } | { guid } | { search: 'Full Name' }. A bare name string or numeric ID is also accepted.");
+
 // Read-only action schemas
 const readOnlyPeopleActions = [
   z.object({
     action: z.literal('find'),
-    query: z.string().min(1),
+    query: z.string().min(1).describe("Name fragment to search for, e.g. 'San' matches 'Santos'."),
     limit: z.coerce.number().int().positive().max(100).default(20),
   }),
   z.object({
     action: z.literal('profile'),
-    person: z.object({
-      id: z.coerce.number().optional(),
-      guid: z.string().optional(),
-      search: z.string().optional(),
-    }),
+    person: personRefSchema,
     include: z.array(z.enum(['groups', 'family', 'connectionStatus', 'attendanceSummary', 'servingSummary'])).optional(),
     includeSensitive: z.boolean().default(false),
   }),
   z.object({
     action: z.literal('groups'),
-    person: z.object({
-      id: z.coerce.number().optional(),
-      guid: z.string().optional(),
-      search: z.string().optional(),
-    }),
+    person: personRefSchema,
   }),
   z.object({
     action: z.literal('family'),
-    person: z.object({
-      id: z.coerce.number().optional(),
-      guid: z.string().optional(),
-      search: z.string().optional(),
-    }),
+    person: personRefSchema,
   }),
   z.object({
     action: z.literal('connectionStatus'),
-    person: z.object({
-      id: z.coerce.number().optional(),
-      guid: z.string().optional(),
-      search: z.string().optional(),
-    }),
+    person: personRefSchema,
   }),
   z.object({
     action: z.literal('attendanceSummary'),
-    person: z.object({
-      id: z.coerce.number().optional(),
-      guid: z.string().optional(),
-      search: z.string().optional(),
-    }),
+    person: personRefSchema,
     windowWeeks: z.coerce.number().int().positive().max(52).default(12),
   }),
   z.object({
     action: z.literal('servingSummary'),
-    person: z.object({
-      id: z.coerce.number().optional(),
-      guid: z.string().optional(),
-      search: z.string().optional(),
-    }),
+    person: personRefSchema,
   }),
   z.object({
     action: z.literal('filter'),
@@ -99,18 +105,18 @@ const writeActions = [
     phone: z.string().optional(),
     firstName: z.string().optional(),
     lastName: z.string().optional(),
-    dryRun: z.boolean().default(true),
-    commit: z.boolean().default(false),
-    reason: z.string().min(1),
+    dryRun: z.boolean().default(true).describe('Preview-only by default. Set dryRun:false AND commit:true to apply.'),
+    commit: z.boolean().default(false).describe('Must be true (with dryRun:false) to actually write.'),
+    reason: z.string().min(1).describe('Required justification for the change; recorded in the audit log.'),
   }),
   z.object({
     action: z.literal('patchAttributes'),
     personId: z.coerce.number().optional(),
     personGuid: z.string().optional(),
     attributes: z.record(z.unknown()),
-    dryRun: z.boolean().default(true),
-    commit: z.boolean().default(false),
-    reason: z.string().min(1),
+    dryRun: z.boolean().default(true).describe('Preview-only by default. Set dryRun:false AND commit:true to apply.'),
+    commit: z.boolean().default(false).describe('Must be true (with dryRun:false) to actually write.'),
+    reason: z.string().min(1).describe('Required justification for the change; recorded in the audit log.'),
   }),
   z.object({
     action: z.literal('createNote'),
@@ -118,9 +124,9 @@ const writeActions = [
     personGuid: z.string().optional(),
     text: z.string().min(1),
     noteType: z.string().optional(),
-    dryRun: z.boolean().default(true),
-    commit: z.boolean().default(false),
-    reason: z.string().min(1),
+    dryRun: z.boolean().default(true).describe('Preview-only by default. Set dryRun:false AND commit:true to apply.'),
+    commit: z.boolean().default(false).describe('Must be true (with dryRun:false) to actually write.'),
+    reason: z.string().min(1).describe('Required justification for the change; recorded in the audit log.'),
   }),
   z.object({
     action: z.literal('createFollowUpTask'),
@@ -130,9 +136,9 @@ const writeActions = [
     description: z.string().optional(),
     assignedToId: z.coerce.number().optional(),
     connectionOpportunityId: z.coerce.number().optional(),
-    dryRun: z.boolean().default(true),
-    commit: z.boolean().default(false),
-    reason: z.string().min(1),
+    dryRun: z.boolean().default(true).describe('Preview-only by default. Set dryRun:false AND commit:true to apply.'),
+    commit: z.boolean().default(false).describe('Must be true (with dryRun:false) to actually write.'),
+    reason: z.string().min(1).describe('Required justification for the change; recorded in the audit log.'),
   }),
 ] as const;
 

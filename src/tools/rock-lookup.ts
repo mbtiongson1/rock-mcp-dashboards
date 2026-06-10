@@ -8,7 +8,7 @@ import { quoteLinqString, quoteODataString } from '../rock/query.js';
 const rockLookupSchema = z.discriminatedUnion('action', [
   z.object({
     action: z.literal('quickSearch'),
-    query: z.string().min(1),
+    query: z.string().min(1).describe("Concept or name to find, e.g. 'Connect Groups', 'Manila', 'Leader'."),
     kinds: z.array(z.enum([
       'person',
       'group',
