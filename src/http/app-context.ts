@@ -28,6 +28,7 @@ export interface CreateAppContextOptions {
   fetchFn?: (url: URL) => Promise<Response>;
   rockClientFactory?: (config: RockClientConfig) => RockClient;
   managementClient?: Auth0ManagementClient;
+  rockUserResolver?: RockUserResolver;
 }
 
 /**
@@ -97,7 +98,7 @@ export async function buildAppContext(options: CreateAppContextOptions = {}): Pr
   })();
 
   const discoveryService = new DiscoveryService(rockClient, redis);
-  const rockUserResolver = new RockUserResolver(rockClient, adminClient);
+  const rockUserResolver = options.rockUserResolver ?? new RockUserResolver(rockClient, adminClient);
   const datasetStore: DatasetStore = redis
     ? new RedisDatasetStore(redis)
     : new InMemoryDatasetStore();

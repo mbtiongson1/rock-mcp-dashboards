@@ -11,6 +11,13 @@ export class ScopeError extends Error {
   }
 }
 
+export class PersonResolutionError extends Error {
+  constructor(message: string, public email?: string) {
+    super(message);
+    this.name = 'PersonResolutionError';
+  }
+}
+
 export function resolveMode(endpoint: EndpointKind, ctx: OAuthRockContext): McpMode {
   if (endpoint === 'readonly') {
     if (!ctx.scopes.has('read')) {
