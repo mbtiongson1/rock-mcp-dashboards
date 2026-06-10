@@ -9,6 +9,7 @@ import {
 } from '../tools/schema-utils.js';
 import { McpMode } from './modes.js';
 import type { OAuthRockContext } from '../http/oauth.js';
+import { AuditLogger } from '../auth/audit.js';
 
 /**
  * Register all gateway tools on an McpServer for the given mode/context.
@@ -20,6 +21,8 @@ import type { OAuthRockContext } from '../http/oauth.js';
  * errors instead of opaque protocol failures.
  */
 export function registerGatewayTools(server: McpServer, mode: McpMode, ctx: OAuthRockContext): void {
+  const auditLogger = new AuditLogger();
+
   for (const tool of allTools) {
     const schema = tool.schemaForMode(mode, ctx.scopes);
     if (!schema) continue;
@@ -51,9 +54,22 @@ export function registerGatewayTools(server: McpServer, mode: McpMode, ctx: OAut
           return await tool.handle(args, extra, ctx) as any;
         } catch (err) {
           if (err instanceof z.ZodError) {
-            return formatResponse(String(args?.action ?? 'unknown'), ctx, null, {
+            const action = String(args?.action ?? 'unknown');
+            const errorMessage = describeToolValidationError(tool.name, err, schema, args);
+            const reason = errorMessage.substring(0, 200);
+
+            auditLogger.log(ctx, {
+              tool: tool.name,
+              action,
+              target: { model: tool.name },
+              outcome: 'error',
+              errorCode: 'INVALID_ARGUMENTS',
+              reason,
+            });
+
+            return formatResponse(action, ctx, null, {
               code: 'INVALID_ARGUMENTS',
-              message: describeToolValidationError(tool.name, err, schema, args),
+              message: errorMessage,
             }) as any;
           }
           throw err;
