@@ -38,7 +38,7 @@
 **Deleted:**
 - `api/index.ts`
 - `src/http/app.ts`
-- `vite.config.ts` stays (report-viewer build retained as stretch); `build:apps` retained
+- `vite.config.ts` removed — report-viewer build replaced by `scripts/build-report-viewer.ts` (esbuild via tsx); `build:apps` retained
 
 **Tests:**
 - Replace `src/http/app.test.ts` → `src/http/mcp-route.test.ts` + `src/http/oauth-validate.test.ts`

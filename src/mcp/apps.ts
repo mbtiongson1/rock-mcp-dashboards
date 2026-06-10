@@ -20,13 +20,13 @@ export function registerReportViewerApp(server: McpServer) {
     { mimeType: RESOURCE_MIME_TYPE },
     async () => {
       let htmlContent = '<html><body>Report Viewer stub</body></html>';
-      // Try, in order: the Vite-built single-file bundle relative to the
+      // Try, in order: the esbuild single-file bundle relative to the
       // compiled module, the same bundle relative to the process working
       // directory (Next.js serverless functions traced via
       // outputFileTracingIncludes), then the raw source HTML as a last resort.
       const candidates = [
-        path.resolve(__dirname, '../../dist/apps/src/apps/report-viewer/report-viewer.html'),
-        path.join(process.cwd(), 'dist/apps/src/apps/report-viewer/report-viewer.html'),
+        path.resolve(__dirname, '../../dist/apps/report-viewer.html'),
+        path.join(process.cwd(), 'dist/apps/report-viewer.html'),
         path.resolve(__dirname, '../apps/report-viewer/report-viewer.html'),
         path.join(process.cwd(), 'src/apps/report-viewer/report-viewer.html'),
       ];

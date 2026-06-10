@@ -8,7 +8,7 @@
     "dev": "next dev --webpack",
     "dev:stdio": "tsx src/server.ts --stdio",
     "build": "npm run build:apps && next build --webpack",
-    "build:apps": "vite build",
+    "build:apps": "tsx scripts/build-report-viewer.ts",
     "build:server": "tsc -p tsconfig.server.json",
     "start": "next start",
     "start:stdio": "node dist/server.js --stdio",
@@ -35,8 +35,7 @@
     "tsx": "^4.10.3",
     "typescript": "^5.4.5",
     "typescript-eslint": "^8.60.1",
-    "vite": "^5.2.11",
-    "vite-plugin-singlefile": "^2.0.1",
+    "esbuild": "^0.25.0",
     "vitest": "^1.6.0"
   }
 }
