@@ -712,4 +712,100 @@ describe('rock_people tool', () => {
     expect(response.result.errors.phone).toBeDefined();
     expect(response.result.errors.phone).toContain('PhoneNumber creation failed');
   });
+
+  describe('filter action', () => {
+    function mockFilterPost(total: number, rows: any[]) {
+      mockClient.post.mockImplementation(async (_ctx: any, _path: string, body: any) => {
+        if (body && body.IsCountOnly) return total;
+        return rows;
+      });
+    }
+
+    const sampleRows = [
+      {
+        Id: 1, Guid: 'g-1', NickName: 'Ana', LastName: 'Cruz',
+        PrimaryCampusId: 1, ConnectionStatusValue: 'Member', Email: 'ana@example.com',
+      },
+    ];
+
+    it('resolves campusName via discovery and returns the true total with privacy-safe rows', async () => {
+      mockFilterPost(450, sampleRows);
+
+      const result = await rockPeopleTool.handle(
+        { action: 'filter', campusName: 'main campus' },
+        null,
+        mockCtx
+      );
+      const response = JSON.parse(result.content[0].text!);
+
+      expect(response.ok).toBe(true);
+      expect(response.result.total).toBe(450);
+      expect(response.result.campus).toEqual({ id: 1, name: 'Main Campus' });
+      expect(response.result.results[0].name).toBe('Ana Cruz');
+      expect(response.result.results[0].email).toBeUndefined();
+
+      // Where clause filters on the resolved campus id
+      const searchCall = mockClient.post.mock.calls.find((c: any[]) => !c[2]?.IsCountOnly);
+      expect(searchCall[2].Where).toContain('PrimaryCampusId == 1');
+    });
+
+    it('supports countOnly without fetching rows', async () => {
+      mockFilterPost(450, sampleRows);
+
+      const result = await rockPeopleTool.handle(
+        { action: 'filter', campusId: 1, countOnly: true },
+        null,
+        mockCtx
+      );
+      const response = JSON.parse(result.content[0].text!);
+
+      expect(response.ok).toBe(true);
+      expect(response.result.total).toBe(450);
+      expect(response.result.results).toBeUndefined();
+      // Only the count query was issued
+      expect(mockClient.post.mock.calls.every((c: any[]) => c[2]?.IsCountOnly)).toBe(true);
+    });
+
+    it('passes offset and limit through for real pagination', async () => {
+      mockFilterPost(450, sampleRows);
+
+      const result = await rockPeopleTool.handle(
+        { action: 'filter', campusId: 1, offset: 200, limit: 100 },
+        null,
+        mockCtx
+      );
+      const response = JSON.parse(result.content[0].text!);
+
+      expect(response.ok).toBe(true);
+      expect(response.result.offset).toBe(200);
+      const searchCall = mockClient.post.mock.calls.find((c: any[]) => !c[2]?.IsCountOnly);
+      expect(searchCall[2].Offset).toBe(200);
+      expect(searchCall[2].Limit).toBe(100);
+    });
+
+    it('returns a helpful error listing campuses when campusName cannot be resolved', async () => {
+      const result = await rockPeopleTool.handle(
+        { action: 'filter', campusName: 'Atlantis' },
+        null,
+        mockCtx
+      );
+      const response = JSON.parse(result.content[0].text!);
+
+      expect(response.ok).toBe(false);
+      expect(response.error.code).toBe('CAMPUS_NOT_FOUND');
+      expect(response.error.message).toContain('Main Campus');
+    });
+
+    it('requires at least one filter criterion', async () => {
+      const result = await rockPeopleTool.handle(
+        { action: 'filter' },
+        null,
+        mockCtx
+      );
+      const response = JSON.parse(result.content[0].text!);
+
+      expect(response.ok).toBe(false);
+      expect(response.error.code).toBe('FILTER_REQUIRED');
+    });
+  });
 });

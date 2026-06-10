@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { resolveMode, ScopeError, EndpointKind } from '../mcp/modes.js';
-import { allTools } from '../tools/index.js';
+import { registerGatewayTools } from '../mcp/register-tools.js';
 import { registerReportViewerApp } from '../mcp/apps.js';
 import { getRockGuideText } from '../mcp/guide-text.js';
 import { getAppContext, CreateAppContextOptions } from './app-context.js';
@@ -61,37 +61,7 @@ export async function handleMcpPost(
     );
 
     // Register tools dynamically based on resolved mode & scopes
-    for (const tool of allTools) {
-      const schema = tool.schemaForMode(mode, ctx.scopes);
-      if (schema) {
-        // Per MCP Apps spec (ext-apps v0.3.0), tools that open an MCP App
-        // must advertise the app resource URI via _meta.ui.resourceUri.
-        const baseConfig = {
-          title: tool.title,
-          description: tool.descriptionForMode(mode),
-          inputSchema: schema,
-        };
-        const config = tool.appResourceUri
-          ? {
-              ...baseConfig,
-              _meta: {
-                ui: {
-                  resourceUri: tool.appResourceUri,
-                },
-              },
-            }
-          : baseConfig;
-
-        server.registerTool(
-          tool.name,
-          config,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          async (args: any, extra: any) => {
-            return await tool.handle(args, extra, ctx) as any;
-          }
-        );
-      }
-    }
+    registerGatewayTools(server, mode, ctx);
 
     // Register App resources
     registerReportViewerApp(server);

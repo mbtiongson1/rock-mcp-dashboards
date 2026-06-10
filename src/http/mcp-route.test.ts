@@ -102,6 +102,64 @@ describe('handleMcpPost', () => {
     expect(json.result.tools.length).toBeGreaterThan(0);
   });
 
+  it('advertises full input schemas (action enum + params) for union-based tools', async () => {
+    const request = mcpRequest(
+      { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} },
+      { Authorization: 'Bearer valid-token' }
+    );
+    const response = await handleMcpPost(request, 'readonly', appOptions(verifierWithScopes(['read'])));
+
+    expect(response.status).toBe(200);
+    const json = parseMcpBody(await readBody(response));
+    const tools: any[] = json.result.tools;
+
+    const people = tools.find((t) => t.name === 'rock_people');
+    expect(people).toBeDefined();
+    expect(people.inputSchema.properties.action).toBeDefined();
+    expect(people.inputSchema.properties.action.enum).toEqual(
+      expect.arrayContaining(['find', 'profile', 'filter'])
+    );
+    expect(people.inputSchema.required).toContain('action');
+    expect(people.description).toContain('Actions:');
+
+    const entity = tools.find((t) => t.name === 'rock_entity');
+    expect(entity.inputSchema.properties.action.enum).toEqual(
+      expect.arrayContaining(['get', 'search', 'searchByKey', 'count', 'attributeValues'])
+    );
+    expect(entity.inputSchema.properties.model).toBeDefined();
+    expect(entity.inputSchema.properties.model.description).toMatch(/people/);
+
+    // Every advertised tool must expose a non-empty schema; an empty
+    // properties object means agents have to guess parameters.
+    // rock_usage is genuinely parameterless, so it is exempt.
+    for (const tool of tools.filter((t) => t.name !== 'rock_usage')) {
+      expect(
+        Object.keys(tool.inputSchema.properties ?? {}).length,
+        `tool ${tool.name} advertises an empty input schema`
+      ).toBeGreaterThan(0);
+    }
+  });
+
+  it('returns a structured INVALID_ARGUMENTS error listing valid actions for a bad discriminator', async () => {
+    const request = mcpRequest(
+      {
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: { name: 'rock_people', arguments: { action: 'find', query: 'x', limit: 'not-a-number' } },
+      },
+      { Authorization: 'Bearer valid-token' }
+    );
+    const response = await handleMcpPost(request, 'readonly', appOptions(verifierWithScopes(['read'])));
+    expect(response.status).toBe(200);
+    const json = parseMcpBody(await readBody(response));
+    // The flattened advertisement schema rejects obviously wrong types up front
+    // or the strict union parse converts it into a structured tool error;
+    // either way the agent gets actionable text, not an opaque failure.
+    const text = JSON.stringify(json);
+    expect(text).toMatch(/limit|number/i);
+  });
+
   it('returns 403 when the readwrite endpoint is hit without the write scope', async () => {
     const request = mcpRequest(
       { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} },

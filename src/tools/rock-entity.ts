@@ -38,18 +38,22 @@ const READ_MODEL_ALLOWLIST = new Set([
   'persons',
 ]);
 
+const MODEL_DESCRIPTION =
+  "Rock model name (lowercase plural), e.g. 'people', 'groups', 'grouptypes', 'campuses', 'attendances'.";
+
 const rockEntitySchema = z.discriminatedUnion('action', [
   z.object({
     action: z.literal('get'),
-    model: z.string().min(1),
+    model: z.string().min(1).describe(MODEL_DESCRIPTION),
     id: z.union([z.string(), z.coerce.number()]),
     includeAttributes: z.boolean().default(false),
     shape: z.enum(['summary', 'full']).default('summary')
   }),
   z.object({
     action: z.literal('search'),
-    model: z.string().min(1),
-    where: z.string().min(1).optional(),
+    model: z.string().min(1).describe(MODEL_DESCRIPTION),
+    where: z.string().min(1).optional()
+      .describe("LINQ-style filter, e.g. 'PrimaryCampusId == 2 && IsActive == true'."),
     select: z.string().min(1).optional(),
     sort: z.string().min(1).optional(),
     offset: z.coerce.number().int().nonnegative().default(0),
@@ -58,8 +62,9 @@ const rockEntitySchema = z.discriminatedUnion('action', [
   }),
   z.object({
     action: z.literal('searchByKey'),
-    model: z.string().min(1).optional(),
-    searchKey: z.string().min(1),
+    model: z.string().min(1).optional().describe(MODEL_DESCRIPTION),
+    searchKey: z.string().min(1)
+      .describe('Saved Entity Search key. Discover keys via rock_lookup.'),
     refinements: z.record(z.unknown()).default({}),
     offset: z.coerce.number().int().nonnegative().default(0),
     limit: z.coerce.number().int().positive().max(1000).default(100),
@@ -67,13 +72,14 @@ const rockEntitySchema = z.discriminatedUnion('action', [
   }),
   z.object({
     action: z.literal('count'),
-    model: z.string().min(1),
-    where: z.string().min(1).optional(),
+    model: z.string().min(1).describe(MODEL_DESCRIPTION),
+    where: z.string().min(1).optional()
+      .describe("LINQ-style filter, e.g. 'PrimaryCampusId == 2'."),
     searchKey: z.string().min(1).optional()
   }),
   z.object({
     action: z.literal('attributeValues'),
-    model: z.string().min(1),
+    model: z.string().min(1).describe(MODEL_DESCRIPTION),
     id: z.union([z.string(), z.coerce.number()])
   })
 ]);
@@ -136,7 +142,7 @@ export const rockEntityTool: GatewayTool = {
     return rockEntitySchema;
   },
   descriptionForMode(_mode: McpMode): string {
-    return 'Generic read-only operations on Rock entities.';
+    return "Generic read-only operations on Rock entities. Pass model as a lowercase plural name (e.g. 'people', 'groups', 'campuses').";
   },
   async handle(args: any, _extra: any, ctx: OAuthRockContext): Promise<McpToolResult> {
     const parsed = rockEntitySchema.parse(args);

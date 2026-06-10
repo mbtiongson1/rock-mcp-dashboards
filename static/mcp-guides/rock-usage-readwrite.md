@@ -5,7 +5,7 @@ You are connected to Favor Church Manila's Rock RMS instance in **readwrite** mo
 Use these rules before calling tools:
 
 - Use `rock_lookup` when you do not know a Rock ID, Group Type, attribute key, report, or Entity Search key.
-- Use `rock_people` for person-centered questions and updates.
+- Use `rock_people` for person-centered questions and updates. The `filter` action lists or counts people by campus/connection status with true totals, `offset` pagination, and a `countOnly` mode.
 - Use `rock_ministry` for Connect Groups, Ministry Teams, attendance, rosters, registrations, and updates.
 - Use `rock_report` for report-like outputs, dashboards, and large tables.
 - Use `rock_entity` only when the domain tools do not fit.
