@@ -46,6 +46,14 @@ export interface AppContext {
   discoveryService: DiscoveryService;
   datasetStore: DatasetStore;
   redisConfigured: boolean;
+  /** Base URL of the default Rock server (ROCK_PUBLIC_URL / ROCK_API_URL). */
+  rockBaseUrl: string;
+  /**
+   * Returns a RockClient bound to an alternate Rock base URL (per-request
+   * `?server=` override). Clients are cached per base URL. Callers must
+   * validate the URL via resolveServerOverride first.
+   */
+  rockClientForBase(baseUrl: string): RockClient;
 }
 
 export async function buildAppContext(options: CreateAppContextOptions = {}): Promise<AppContext> {
@@ -100,6 +108,19 @@ export async function buildAppContext(options: CreateAppContextOptions = {}): Pr
     console.log('[Rock MCP] Using in-memory cache (Redis not configured)');
   }
 
+  const scopedClients = new Map<string, RockClient>([[rockBaseUrl, rockClient]]);
+  const rockClientForBase = (baseUrl: string): RockClient => {
+    let client = scopedClients.get(baseUrl);
+    if (!client) {
+      client = createRockClient({
+        baseUrl,
+        credentialStrategy: new UserJwtStrategy(),
+      });
+      scopedClients.set(baseUrl, client);
+    }
+    return client;
+  };
+
   return {
     oauthConfig,
     oauthMetadata,
@@ -111,6 +132,8 @@ export async function buildAppContext(options: CreateAppContextOptions = {}): Pr
     discoveryService,
     datasetStore,
     redisConfigured: !!redis,
+    rockBaseUrl,
+    rockClientForBase,
   };
 }
 

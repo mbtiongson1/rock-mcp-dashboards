@@ -172,6 +172,46 @@ describe('handleMcpPost', () => {
     expect(json.error).toMatch(/write/i);
   });
 
+  it('rejects a ?server= override outside the allowed domain with 400', async () => {
+    const request = new Request('https://mcp.example.com/mcp?server=evil.com', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+        Authorization: 'Bearer valid-token',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+    });
+    const response = await handleMcpPost(request, 'readonly', appOptions(verifierWithScopes(['read'])));
+
+    expect(response.status).toBe(400);
+    const json = JSON.parse(await readBody(response));
+    expect(json.error).toMatch(/not an allowed Rock host/);
+  });
+
+  it('routes tool clients to an allowed ?server= override host', async () => {
+    const factoryCalls: string[] = [];
+    const options = appOptions(verifierWithScopes(['read']));
+    options.rockClientFactory = (config) => {
+      factoryCalls.push(config.baseUrl);
+      return new FakeRockClient();
+    };
+
+    const request = new Request('https://mcp.example.com/mcp?server=rock-preview.example.com', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+        Authorization: 'Bearer valid-token',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+    });
+    const response = await handleMcpPost(request, 'readonly', options);
+
+    expect(response.status).toBe(200);
+    expect(factoryCalls).toContain('https://rock-preview.example.com');
+  });
+
   it('sets permissive CORS headers on responses', async () => {
     const request = mcpRequest(
       { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} },

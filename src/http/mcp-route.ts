@@ -6,6 +6,7 @@ import { registerReportViewerApp } from '../mcp/apps.js';
 import { getRockGuideText } from '../mcp/guide-text.js';
 import { getAppContext, CreateAppContextOptions } from './app-context.js';
 import { validateOAuthContext, jsonCors, withCors } from './oauth-validate.js';
+import { resolveServerOverride } from './server-override.js';
 import type { OAuthRockContext } from './oauth.js';
 
 /**
@@ -37,6 +38,19 @@ export async function handleMcpPost(
   (ctx as { rockClient?: unknown }).rockClient = app.rockClient;
   (ctx as { discoveryService?: unknown }).discoveryService = app.discoveryService;
   (ctx as { datasetStore?: unknown }).datasetStore = app.datasetStore;
+
+  // Optional per-request Rock server override: /mcp?server=<host>.
+  // Allowlisted hosts only (see server-override.ts). Note: discovery and
+  // user resolution still run against the default server; only tool calls
+  // use the override client.
+  const serverParam = new URL(request.url).searchParams.get('server');
+  if (serverParam) {
+    const override = resolveServerOverride(serverParam, app.rockBaseUrl, process.env.ROCK_ALLOWED_SERVERS);
+    if (!override.ok) {
+      return jsonCors({ error: override.error }, { status: 400 });
+    }
+    (ctx as { rockClient?: unknown }).rockClient = app.rockClientForBase(override.baseUrl);
+  }
 
   try {
     // Resolve Rock person for this OAuth subject
