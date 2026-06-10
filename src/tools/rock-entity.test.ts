@@ -614,4 +614,289 @@ describe('rock_entity tool', () => {
       expect(response.error.message).toContain('REST v2 access');
     });
   });
+
+  // Tests for model name normalization (issue #17)
+  describe('model name normalization for search and count', () => {
+    describe('search action — singular/capitalized model names', () => {
+      it('should succeed for search with "Person" (singular capitalized)', async () => {
+        mockClient.post.mockResolvedValue([{ Id: 1, FirstName: 'John' }]);
+
+        const result = await rockEntityTool.handle(
+          { action: 'search', model: 'Person', where: 'Id == 1' },
+          null,
+          mockCtx
+        );
+
+        // Should have called v2 with normalized (plural) path
+        expect(mockClient.post).toHaveBeenCalledWith(
+          mockCtx,
+          '/api/v2/models/people/search',
+          expect.objectContaining({ Where: 'Id == 1' })
+        );
+        const response = JSON.parse(result.content[0].text!);
+        expect(response.ok).toBe(true);
+        expect(response.error).toBeUndefined();
+      });
+
+      it('should succeed for search with "person" (singular lowercase)', async () => {
+        mockClient.post.mockResolvedValue([{ Id: 2 }]);
+
+        const result = await rockEntityTool.handle(
+          { action: 'search', model: 'person' },
+          null,
+          mockCtx
+        );
+
+        expect(mockClient.post).toHaveBeenCalledWith(
+          mockCtx,
+          '/api/v2/models/people/search',
+          expect.any(Object)
+        );
+        const response = JSON.parse(result.content[0].text!);
+        expect(response.ok).toBe(true);
+      });
+
+      it('should succeed for search with "people" (already plural)', async () => {
+        mockClient.post.mockResolvedValue([{ Id: 3 }]);
+
+        const result = await rockEntityTool.handle(
+          { action: 'search', model: 'people' },
+          null,
+          mockCtx
+        );
+
+        expect(mockClient.post).toHaveBeenCalledWith(
+          mockCtx,
+          '/api/v2/models/people/search',
+          expect.any(Object)
+        );
+        const response = JSON.parse(result.content[0].text!);
+        expect(response.ok).toBe(true);
+      });
+
+      it('should succeed for search with "Group" (singular capitalized)', async () => {
+        mockClient.post.mockResolvedValue([{ Id: 10, Name: 'Test Group' }]);
+
+        const result = await rockEntityTool.handle(
+          { action: 'search', model: 'Group' },
+          null,
+          mockCtx
+        );
+
+        expect(mockClient.post).toHaveBeenCalledWith(
+          mockCtx,
+          '/api/v2/models/groups/search',
+          expect.any(Object)
+        );
+        const response = JSON.parse(result.content[0].text!);
+        expect(response.ok).toBe(true);
+      });
+
+      it('should succeed for search with "GroupMember" (singular PascalCase)', async () => {
+        mockClient.post.mockResolvedValue([{ Id: 20, GroupId: 5, PersonId: 1 }]);
+
+        const result = await rockEntityTool.handle(
+          { action: 'search', model: 'GroupMember' },
+          null,
+          mockCtx
+        );
+
+        expect(mockClient.post).toHaveBeenCalledWith(
+          mockCtx,
+          '/api/v2/models/groupmembers/search',
+          expect.any(Object)
+        );
+        const response = JSON.parse(result.content[0].text!);
+        expect(response.ok).toBe(true);
+      });
+
+      it('should succeed for search with "DefinedValue" (singular PascalCase)', async () => {
+        mockClient.post.mockResolvedValue([{ Id: 30, Value: 'Member' }]);
+
+        const result = await rockEntityTool.handle(
+          { action: 'search', model: 'DefinedValue' },
+          null,
+          mockCtx
+        );
+
+        expect(mockClient.post).toHaveBeenCalledWith(
+          mockCtx,
+          '/api/v2/models/definedvalues/search',
+          expect.any(Object)
+        );
+        const response = JSON.parse(result.content[0].text!);
+        expect(response.ok).toBe(true);
+      });
+
+      it('should reject search on genuinely disallowed model "UserLogin"', async () => {
+        const result = await rockEntityTool.handle(
+          { action: 'search', model: 'UserLogin', where: 'Id == 1' },
+          null,
+          mockCtx
+        );
+
+        expect(mockClient.post).not.toHaveBeenCalled();
+        const response = JSON.parse(result.content[0].text!);
+        expect(response.ok).toBe(false);
+        expect(response.error?.code).toBe('MODEL_NOT_ALLOWED');
+      });
+
+      it('should reject search on genuinely disallowed model "userlogins"', async () => {
+        const result = await rockEntityTool.handle(
+          { action: 'search', model: 'userlogins', where: 'Id == 1' },
+          null,
+          mockCtx
+        );
+
+        expect(mockClient.post).not.toHaveBeenCalled();
+        const response = JSON.parse(result.content[0].text!);
+        expect(response.ok).toBe(false);
+        expect(response.error?.code).toBe('MODEL_NOT_ALLOWED');
+      });
+    });
+
+    describe('count action — singular/capitalized model names', () => {
+      it('should succeed for count with "Person" (singular capitalized)', async () => {
+        mockClient.post.mockResolvedValue(15);
+
+        const result = await rockEntityTool.handle(
+          { action: 'count', model: 'Person', where: 'IsActive == true' },
+          null,
+          mockCtx
+        );
+
+        expect(mockClient.post).toHaveBeenCalledWith(
+          mockCtx,
+          '/api/v2/models/people/search',
+          expect.objectContaining({ IsCountOnly: true })
+        );
+        const response = JSON.parse(result.content[0].text!);
+        expect(response.ok).toBe(true);
+        expect(response.result.count).toBe(15);
+      });
+
+      it('should succeed for count with "person" (singular lowercase)', async () => {
+        mockClient.post.mockResolvedValue(7);
+
+        const result = await rockEntityTool.handle(
+          { action: 'count', model: 'person' },
+          null,
+          mockCtx
+        );
+
+        expect(mockClient.post).toHaveBeenCalledWith(
+          mockCtx,
+          '/api/v2/models/people/search',
+          expect.objectContaining({ IsCountOnly: true })
+        );
+        const response = JSON.parse(result.content[0].text!);
+        expect(response.ok).toBe(true);
+      });
+
+      it('should succeed for count with "Group"', async () => {
+        mockClient.post.mockResolvedValue(42);
+
+        const result = await rockEntityTool.handle(
+          { action: 'count', model: 'Group' },
+          null,
+          mockCtx
+        );
+
+        expect(mockClient.post).toHaveBeenCalledWith(
+          mockCtx,
+          '/api/v2/models/groups/search',
+          expect.objectContaining({ IsCountOnly: true })
+        );
+        const response = JSON.parse(result.content[0].text!);
+        expect(response.ok).toBe(true);
+      });
+
+      it('should reject count on genuinely disallowed model "UserLogin"', async () => {
+        const result = await rockEntityTool.handle(
+          { action: 'count', model: 'UserLogin' },
+          null,
+          mockCtx
+        );
+
+        expect(mockClient.post).not.toHaveBeenCalled();
+        const response = JSON.parse(result.content[0].text!);
+        expect(response.ok).toBe(false);
+        expect(response.error?.code).toBe('MODEL_NOT_ALLOWED');
+      });
+    });
+  });
+
+  describe('searchByKey error includes discovery hint', () => {
+    it('should include rock_lookup discovery hint in searchByKey error message', async () => {
+      mockClient.post.mockRejectedValue(new Error('Rock API error (404): Not Found'));
+
+      const result = await rockEntityTool.handle(
+        { action: 'searchByKey', searchKey: 'UnknownKey' },
+        null,
+        mockCtx
+      );
+
+      const response = JSON.parse(result.content[0].text!);
+      expect(response.ok).toBe(false);
+      expect(response.error?.code).toBe('SEARCH_BY_KEY_ERROR');
+      expect(response.error?.message).toContain('rock_lookup');
+    });
+
+    it('should include availableSearchKeys when discoveryService is available', async () => {
+      mockClient.post.mockRejectedValue(new Error('Rock API error (404): Not Found'));
+
+      const mockDiscoveryService = {
+        getMap: vi.fn().mockResolvedValue({
+          entitySearches: [
+            { idKey: 'ActiveMembers', name: 'Active Members' },
+            { idKey: 'CoreLeaders', name: 'Core Leaders' },
+          ],
+        }),
+      };
+
+      const ctxWithDiscovery = {
+        ...mockCtx,
+        discoveryService: mockDiscoveryService,
+      };
+
+      const result = await rockEntityTool.handle(
+        { action: 'searchByKey', searchKey: 'UnknownKey' },
+        null,
+        ctxWithDiscovery
+      );
+
+      const response = JSON.parse(result.content[0].text!);
+      expect(response.ok).toBe(false);
+      expect(response.error?.code).toBe('SEARCH_BY_KEY_ERROR');
+      expect(response.error?.availableSearchKeys).toBeDefined();
+      expect(response.error?.availableSearchKeys).toHaveLength(2);
+      expect(response.error?.availableSearchKeys[0].key).toBe('ActiveMembers');
+      expect(response.error?.availableSearchKeys[1].key).toBe('CoreLeaders');
+    });
+
+    it('should not throw when discoveryService.getMap fails', async () => {
+      mockClient.post.mockRejectedValue(new Error('Rock API error (401): Unauthorized'));
+
+      const mockDiscoveryService = {
+        getMap: vi.fn().mockRejectedValue(new Error('Discovery unavailable')),
+      };
+
+      const ctxWithDiscovery = {
+        ...mockCtx,
+        discoveryService: mockDiscoveryService,
+      };
+
+      const result = await rockEntityTool.handle(
+        { action: 'searchByKey', searchKey: 'SomeKey' },
+        null,
+        ctxWithDiscovery
+      );
+
+      const response = JSON.parse(result.content[0].text!);
+      expect(response.ok).toBe(false);
+      expect(response.error?.code).toBe('SEARCH_BY_KEY_ERROR');
+      // No availableSearchKeys since discovery failed, but should not have thrown
+      expect(response.error?.availableSearchKeys).toBeUndefined();
+    });
+  });
 });

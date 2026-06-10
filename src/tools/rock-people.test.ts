@@ -807,5 +807,132 @@ describe('rock_people tool', () => {
       expect(response.ok).toBe(false);
       expect(response.error.code).toBe('FILTER_REQUIRED');
     });
+
+    it('accepts a numeric connectionStatus DefinedValue ID without a lookup', async () => {
+      mockFilterPost(15, sampleRows);
+
+      const result = await rockPeopleTool.handle(
+        { action: 'filter', campusId: 2, connectionStatus: '99', countOnly: true },
+        null,
+        mockCtx
+      );
+      const response = JSON.parse(result.content[0].text!);
+
+      expect(response.ok).toBe(true);
+      expect(response.result.total).toBe(15);
+      const call = mockClient.post.mock.calls[0];
+      expect(call[2].Where).toContain('PrimaryCampusId == 2');
+      expect(call[2].Where).toContain('ConnectionStatusValueId == 99');
+      // No DefinedValue lookup needed for numeric IDs
+      expect(mockClient.get).not.toHaveBeenCalled();
+    });
+
+    it('resolves a connectionStatus name to its DefinedValue ID', async () => {
+      mockClient.get.mockResolvedValueOnce([{ Id: 77, Value: 'Leader' }]);
+      mockFilterPost(1, [{ Id: 200, Guid: 'guid-200', NickName: 'Tom', LastName: 'Jones', ConnectionStatusValueId: 77 }]);
+
+      const result = await rockPeopleTool.handle(
+        { action: 'filter', connectionStatus: 'leader' },
+        null,
+        mockCtx
+      );
+      const response = JSON.parse(result.content[0].text!);
+
+      expect(response.ok).toBe(true);
+      expect(response.result.results).toHaveLength(1);
+      expect(mockClient.get).toHaveBeenCalledWith(
+        mockCtx,
+        expect.stringContaining('Connection Status')
+      );
+      const searchCall = mockClient.post.mock.calls.find((c: any[]) => !c[2]?.IsCountOnly);
+      expect(searchCall[2].Where).toContain('ConnectionStatusValueId == 77');
+    });
+
+    it('lists available statuses when a connectionStatus name cannot be resolved', async () => {
+      mockClient.get.mockResolvedValueOnce([{ Id: 1, Value: 'Member' }, { Id: 2, Value: 'Visitor' }]);
+
+      const result = await rockPeopleTool.handle(
+        { action: 'filter', connectionStatus: 'NonExistentStatus' },
+        null,
+        mockCtx
+      );
+      const response = JSON.parse(result.content[0].text!);
+
+      expect(response.ok).toBe(false);
+      expect(response.error.code).toBe('CONNECTION_STATUS_NOT_FOUND');
+      expect(response.error.message).toContain('NonExistentStatus');
+      expect(response.error.message).toContain('Member');
+    });
+
+    it('applies isActive via the resolved Active RecordStatus DefinedValue', async () => {
+      mockClient.get.mockResolvedValueOnce([{ Id: 3, Value: 'Active' }]);
+      mockFilterPost(10, sampleRows);
+
+      const result = await rockPeopleTool.handle(
+        { action: 'filter', campusId: 1, isActive: true },
+        null,
+        mockCtx
+      );
+      const response = JSON.parse(result.content[0].text!);
+
+      expect(response.ok).toBe(true);
+      const searchCall = mockClient.post.mock.calls.find((c: any[]) => !c[2]?.IsCountOnly);
+      expect(searchCall[2].Where).toContain('RecordStatusValueId == 3');
+    });
+
+    it('errors instead of counting everyone when isActive is the only filter and cannot be resolved', async () => {
+      mockClient.get.mockResolvedValue([]); // RecordStatus lookups all empty
+
+      const result = await rockPeopleTool.handle(
+        { action: 'filter', isActive: true },
+        null,
+        mockCtx
+      );
+      const response = JSON.parse(result.content[0].text!);
+
+      expect(response.ok).toBe(false);
+      expect(response.error.code).toBe('FILTER_UNRESOLVED');
+      expect(response.error.message).toContain('isActive');
+    });
+
+    it('falls back to v1 OData when v2 throws', async () => {
+      mockClient.post.mockRejectedValue(new Error('v2 unavailable'));
+      mockClient.get.mockResolvedValue([
+        { Id: 400, Guid: 'guid-400', NickName: 'Chris', LastName: 'Martin', PrimaryCampusId: 3 },
+      ]);
+
+      const result = await rockPeopleTool.handle(
+        { action: 'filter', campusId: 3 },
+        null,
+        mockCtx
+      );
+      const response = JSON.parse(result.content[0].text!);
+
+      expect(response.ok).toBe(true);
+      expect(response.result.results).toHaveLength(1);
+      expect(response.result.results[0].id).toBe(400);
+      expect(response.warning).toMatch(/v1/i);
+      expect(mockClient.get).toHaveBeenCalledWith(
+        mockCtx,
+        expect.stringContaining('PrimaryCampusId')
+      );
+    });
+
+    it('is available in readonly mode', async () => {
+      const schema = rockPeopleTool.schemaForMode('readonly', new Set(['read']));
+      expect(schema).not.toBeNull();
+
+      mockFilterPost(5, sampleRows);
+
+      const result = await rockPeopleTool.handle(
+        { action: 'filter', campusId: 1, countOnly: true },
+        null,
+        mockCtx // mockCtx is readonly mode
+      );
+      const response = JSON.parse(result.content[0].text!);
+
+      expect(response.ok).toBe(true);
+      expect(typeof response.result.total).toBe('number');
+    });
   });
 });

@@ -188,6 +188,71 @@ describe('rock_ministry tool', () => {
     expect(response.error.code).toBe('NO_GROUP_TYPE');
   });
 
+  it('connectGroupHealth should bypass discovery when groupTypeId is provided', async () => {
+    // Mock groups and members for the overridden group type 99
+    mockClient.post.mockResolvedValueOnce([
+      { Id: 60, Name: 'Manila Connect Group', GroupTypeId: 99, IsActive: true },
+    ]);
+    mockClient.post.mockResolvedValueOnce([
+      { Id: 5001, PersonId: 501, GroupRole: { Name: 'Leader', IsLeader: true } },
+      { Id: 5002, PersonId: 502, GroupRole: { Name: 'Member', IsLeader: false } },
+    ]);
+
+    const result = await rockMinistryTool.handle(
+      { action: 'connectGroupHealth', groupTypeId: 99 },
+      null,
+      mockCtx
+    );
+
+    // Discovery service should NOT have been called since groupTypeId was pinned
+    expect(mockDiscoveryService.getMap).not.toHaveBeenCalled();
+
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.ok).toBe(true);
+
+    // The WHERE clause should use the pinned group type id (99), not the discovered one (10)
+    const firstPostCall = mockClient.post.mock.calls[0];
+    expect(firstPostCall[2].Where).toContain('GroupTypeId == 99');
+
+    // discovery should reflect the override source, not a discovered name/confidence
+    expect(response.result.discovery.connectGroupType.source).toBe('override');
+    expect(response.result.discovery.connectGroupType.id).toBe(99);
+    // No low-confidence warning should be present
+    expect(response.result.discovery.warning).toBeUndefined();
+  });
+
+  it('connectGroupHealth should surface a low-confidence warning when confidence < 0.7', async () => {
+    // Set up a discovery map with a low-confidence type
+    mockDiscoveryService.getMap.mockResolvedValueOnce({
+      groupTypes: {
+        connectGroups: [{ id: 10, name: 'Connect Group Section', confidence: 0.35 }],
+        ministryTeams: [],
+      },
+      campuses: [],
+    });
+
+    mockClient.post.mockResolvedValueOnce([
+      { Id: 70, Name: 'Test Group', GroupTypeId: 10, IsActive: true },
+    ]);
+    mockClient.post.mockResolvedValueOnce([
+      { Id: 6001, PersonId: 601, GroupRole: { Name: 'Member', IsLeader: false } },
+    ]);
+
+    const result = await rockMinistryTool.handle(
+      { action: 'connectGroupHealth' },
+      null,
+      mockCtx
+    );
+
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.ok).toBe(true);
+    expect(response.result.discovery.connectGroupType.confidence).toBe(0.35);
+    // Warning should be present
+    expect(typeof response.result.discovery.warning).toBe('string');
+    expect(response.result.discovery.warning).toContain('low confidence');
+    expect(response.result.discovery.warning).toContain('groupTypeId');
+  });
+
   it('addOrUpdateGroupMember should return ROLE_UNRESOLVED when no roleId and role cannot be resolved', async () => {
     mockCtx.mode = 'readwrite';
     mockCtx.scopes = new Set(['read', 'write']);
@@ -311,5 +376,97 @@ describe('rock_ministry tool', () => {
     );
     expect(postCall[2].CampusId).toBeUndefined();
     expect(postCall[2].OccurrenceId).toBeDefined();
+  });
+
+  describe('leaderCount action (issue #20)', () => {
+    it('returns totalLeaders deduped across groups (one leader shared by two groups)', async () => {
+      // First post: groups search returns 2 groups
+      mockClient.post.mockResolvedValueOnce([
+        { Id: 50, Name: 'Young Adults', GroupTypeId: 10, IsActive: true },
+        { Id: 51, Name: 'Adults', GroupTypeId: 10, IsActive: true },
+      ]);
+
+      // Group 50 members: leader 101 + member 102
+      mockClient.post.mockResolvedValueOnce([
+        { Id: 1001, PersonId: 101, GroupRole: { Name: 'Leader', IsLeader: true } },
+        { Id: 1002, PersonId: 102, GroupRole: { Name: 'Member', IsLeader: false } },
+      ]);
+
+      // Group 51 members: SAME leader 101 (shared) + a second leader 201
+      mockClient.post.mockResolvedValueOnce([
+        { Id: 2001, PersonId: 101, GroupRole: { Name: 'Leader', IsLeader: true } },
+        { Id: 2002, PersonId: 201, GroupRole: { Name: 'Leader', IsLeader: true } },
+      ]);
+
+      const result = await rockMinistryTool.handle(
+        { action: 'leaderCount' },
+        null,
+        mockCtx
+      );
+
+      const response = JSON.parse(result.content[0].text!);
+      expect(response.ok).toBe(true);
+      // Distinct leaders: 101 and 201 => 2, not 3 (sum)
+      expect(response.result.totalLeaders).toBe(2);
+      expect(response.result.groupsAnalyzed).toBe(2);
+      expect(response.result.truncated).toBe(false);
+      expect(response.result.campus).toBe('All');
+    });
+
+    it('passing groupTypeId bypasses discovery for type resolution', async () => {
+      // groups search
+      mockClient.post.mockResolvedValueOnce([
+        { Id: 60, Name: 'Group A', GroupTypeId: 99, IsActive: true },
+      ]);
+      // members for group 60
+      mockClient.post.mockResolvedValueOnce([
+        { Id: 6001, PersonId: 601, GroupRole: { Name: 'Leader', IsLeader: true } },
+      ]);
+
+      const result = await rockMinistryTool.handle(
+        { action: 'leaderCount', groupTypeId: 99 },
+        null,
+        mockCtx
+      );
+
+      const response = JSON.parse(result.content[0].text!);
+      expect(response.ok).toBe(true);
+      // Discovery must NOT have been consulted for type resolution
+      expect(mockDiscoveryService.getMap).not.toHaveBeenCalled();
+      // The groups search WHERE clause must use the provided groupTypeId
+      const groupsCall = mockClient.post.mock.calls[0];
+      expect(groupsCall[1]).toBe('/api/v2/models/groups/search');
+      expect(groupsCall[2].Where).toContain('GroupTypeId == 99');
+      expect(response.result.totalLeaders).toBe(1);
+    });
+
+    it('sets truncated flag when group count exceeds the cap', async () => {
+      // Build 101 groups (cap is 100; over-fetch detects truncation)
+      const manyGroups = Array.from({ length: 101 }, (_, i) => ({
+        Id: 1000 + i,
+        Name: `Group ${i}`,
+        GroupTypeId: 10,
+        IsActive: true,
+      }));
+      mockClient.post.mockResolvedValueOnce(manyGroups);
+      // Every subsequent member fetch returns the same single leader (deduped to 1)
+      mockClient.post.mockResolvedValue([
+        { Id: 9001, PersonId: 999, GroupRole: { Name: 'Leader', IsLeader: true } },
+      ]);
+
+      const result = await rockMinistryTool.handle(
+        { action: 'leaderCount', groupTypeId: 10 },
+        null,
+        mockCtx
+      );
+
+      const response = JSON.parse(result.content[0].text!);
+      expect(response.ok).toBe(true);
+      expect(response.result.truncated).toBe(true);
+      // Only the first 100 groups are analyzed (bounded)
+      expect(response.result.groupsAnalyzed).toBe(100);
+      // All groups share the same single distinct leader
+      expect(response.result.totalLeaders).toBe(1);
+    });
   });
 });

@@ -3,6 +3,8 @@ import {
   scoreLifecycleAttribute,
   scoreAgeGroupAttribute,
   scoreFluroIdAttribute,
+  scoreConnectGroupType,
+  scoreMinistryTeamType,
   RockAttribute,
 } from './confidence.js';
 
@@ -269,6 +271,68 @@ describe('Attribute Confidence Scorers', () => {
       const result = scoreFluroIdAttribute(attr);
       expect(result.confidence).toBeGreaterThan(0);
       expect(result.confidence).toBeLessThan(0.85);
+    });
+  });
+
+  describe('scoreConnectGroupType', () => {
+    it('should score "Connect Groups" (exact plural) as high confidence', () => {
+      const result = scoreConnectGroupType('Connect Groups');
+      expect(result.confidence).toBeGreaterThanOrEqual(0.60);
+      expect(result.signals.some((s) => s.includes('exact name match'))).toBe(true);
+    });
+
+    it('should score "Connect Group" (exact singular) as high confidence', () => {
+      const result = scoreConnectGroupType('Connect Group');
+      expect(result.confidence).toBeGreaterThanOrEqual(0.60);
+      expect(result.signals.some((s) => s.includes('exact name match'))).toBe(true);
+    });
+
+    it('should score "Connect Group" strictly higher than "Connect Group Section"', () => {
+      const exactScore = scoreConnectGroupType('Connect Group').confidence;
+      const sectionScore = scoreConnectGroupType('Connect Group Section').confidence;
+      expect(exactScore).toBeGreaterThan(sectionScore);
+    });
+
+    it('should penalize "Connect Group Section" for wrapper/container term', () => {
+      const result = scoreConnectGroupType('Connect Group Section');
+      expect(result.confidence).toBeLessThan(0.60);
+      expect(result.signals.some((s) => s.includes('wrapper/container term'))).toBe(true);
+    });
+
+    it('should penalize other container terms (area, region, category)', () => {
+      const areaScore = scoreConnectGroupType('Connect Group Area').confidence;
+      const regionScore = scoreConnectGroupType('Connect Group Region').confidence;
+      const categoryScore = scoreConnectGroupType('Connect Group Category').confidence;
+      const exactScore = scoreConnectGroupType('Connect Group').confidence;
+      expect(exactScore).toBeGreaterThan(areaScore);
+      expect(exactScore).toBeGreaterThan(regionScore);
+      expect(exactScore).toBeGreaterThan(categoryScore);
+    });
+
+    it('should clamp confidence to [0, 1]', () => {
+      const result = scoreConnectGroupType('Connect Groups');
+      expect(result.confidence).toBeGreaterThanOrEqual(0);
+      expect(result.confidence).toBeLessThanOrEqual(1.0);
+    });
+  });
+
+  describe('scoreMinistryTeamType', () => {
+    it('should score "Ministry Teams" (exact plural) as high confidence', () => {
+      const result = scoreMinistryTeamType('Ministry Teams');
+      expect(result.confidence).toBeGreaterThanOrEqual(0.60);
+      expect(result.signals.some((s) => s.includes('exact name match'))).toBe(true);
+    });
+
+    it('should score "Ministry Team" strictly higher than "Ministry Team Section"', () => {
+      const exactScore = scoreMinistryTeamType('Ministry Team').confidence;
+      const sectionScore = scoreMinistryTeamType('Ministry Team Section').confidence;
+      expect(exactScore).toBeGreaterThan(sectionScore);
+    });
+
+    it('should penalize wrapper/container terms for ministry team types', () => {
+      const result = scoreMinistryTeamType('Ministry Team Area');
+      expect(result.signals.some((s) => s.includes('wrapper/container term'))).toBe(true);
+      expect(result.confidence).toBeLessThan(0.60);
     });
   });
 });

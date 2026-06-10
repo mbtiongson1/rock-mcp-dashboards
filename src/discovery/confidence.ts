@@ -30,12 +30,24 @@ export function scoreConnectGroupType(name: string): { confidence: number; signa
   const signals: string[] = [];
   const lowerName = name.toLowerCase();
 
-  if (name === 'Connect Groups') {
+  // Strong match: exact singular or plural canonical name
+  if (name === 'Connect Groups' || name === 'Connect Group') {
     confidence += 0.60;
-    signals.push('exact name match: Connect Groups');
+    signals.push(`exact name match: ${name}`);
   } else if (lowerName.includes('connect') && lowerName.includes('group')) {
     confidence += 0.35;
     signals.push('name contains Connect and Group');
+  }
+
+  // Penalize wrapper/container terms — these are structural containers, not the type itself
+  if (
+    lowerName.includes('section') ||
+    lowerName.includes('area') ||
+    lowerName.includes('region') ||
+    lowerName.includes('category')
+  ) {
+    confidence -= 0.20;
+    signals.push('name contains wrapper/container term (section/area/region/category)');
   }
 
   // Check signals/warnings
@@ -55,15 +67,27 @@ export function scoreMinistryTeamType(name: string): { confidence: number; signa
   const signals: string[] = [];
   const lowerName = name.toLowerCase();
 
-  if (name === 'Ministry Teams') {
+  // Strong match: exact singular or plural canonical name
+  if (name === 'Ministry Teams' || name === 'Ministry Team') {
     confidence += 0.60;
-    signals.push('exact name match: Ministry Teams');
+    signals.push(`exact name match: ${name}`);
   } else if (lowerName.includes('ministry') && lowerName.includes('team')) {
     confidence += 0.35;
     signals.push('name contains Ministry and Team');
   } else if (lowerName.includes('serving') || lowerName.includes('service') || lowerName.includes('volunteer')) {
     confidence += 0.20;
     signals.push('name contains serving/volunteer context');
+  }
+
+  // Penalize wrapper/container terms — these are structural containers, not the type itself
+  if (
+    lowerName.includes('section') ||
+    lowerName.includes('area') ||
+    lowerName.includes('region') ||
+    lowerName.includes('category')
+  ) {
+    confidence -= 0.20;
+    signals.push('name contains wrapper/container term (section/area/region/category)');
   }
 
   if (lowerName.includes('archived') || lowerName.includes('old') || lowerName.includes('deprecated')) {

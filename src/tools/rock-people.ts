@@ -77,11 +77,13 @@ const readOnlyPeopleActions = [
     campusName: z.string().min(1).optional()
       .describe("Campus name (e.g. 'Manila'); resolved to an ID via discovery, case-insensitive."),
     connectionStatus: z.string().min(1).optional()
-      .describe("Connection status name (e.g. 'Member', 'Visitor'); resolved case-insensitively."),
-    countOnly: z.boolean().default(false)
+      .describe("Connection status name (e.g. 'Member', 'Visitor'; case-insensitive) or numeric DefinedValue ID."),
+    isActive: z.coerce.boolean().optional()
+      .describe('Filter by record status: true = Active records only, false = non-active only.'),
+    countOnly: z.coerce.boolean().default(false)
       .describe('Return only the true total count without fetching rows.'),
-    limit: z.coerce.number().int().positive().max(200).default(50)
-      .describe('Page size (max 200). The response always includes the true total.'),
+    limit: z.coerce.number().int().positive().max(500).default(50)
+      .describe('Page size (max 500). The response always includes the true total.'),
     offset: z.coerce.number().int().nonnegative().default(0)
       .describe('Pagination offset; combine with limit to page through all matches.'),
   }),
@@ -606,6 +608,37 @@ async function resolveCampusName(
   return null;
 }
 
+/**
+ * Resolve a DefinedValue ID by DefinedType name and Value name.
+ * Returns the numeric ID or null if not resolvable.
+ */
+async function resolveDefinedValueId(
+  client: RockClient,
+  ctx: OAuthRockContext,
+  definedTypeName: string,
+  valueName: string
+): Promise<number | null> {
+  try {
+    const results = await client.get<any[]>(
+      ctx,
+      `/api/DefinedValues?$filter=DefinedType/Name eq ${quoteODataString(definedTypeName)} and Value eq ${quoteODataString(valueName)}&$top=1`
+    );
+    if (results && results.length > 0) return results[0].Id;
+  } catch {
+    // Fallback: try by substringof on DefinedType
+    try {
+      const results = await client.get<any[]>(
+        ctx,
+        `/api/DefinedValues?$filter=substringof(${quoteODataString(definedTypeName)}, DefinedType/Name) eq true and Value eq ${quoteODataString(valueName)}&$top=1`
+      );
+      if (results && results.length > 0) return results[0].Id;
+    } catch {
+      // Unable to resolve
+    }
+  }
+  return null;
+}
+
 export const rockPeopleTool: GatewayTool = {
   name: 'rock_people',
   title: 'Rock People Directory',
@@ -664,13 +697,13 @@ export const rockPeopleTool: GatewayTool = {
     }
 
     if (parsed.action === 'filter') {
-      const { campusId, campusName, connectionStatus, countOnly, limit, offset } = parsed;
+      const { campusId, campusName, connectionStatus, isActive, countOnly, limit, offset } = parsed;
       const discoveryService = getDiscoveryService(ctx);
 
-      if (!campusId && !campusName && !connectionStatus) {
+      if (!campusId && !campusName && !connectionStatus && isActive === undefined) {
         return formatResponse(parsed.action, ctx, null, {
           code: 'FILTER_REQUIRED',
-          message: 'Provide at least one filter: campusId, campusName, or connectionStatus.',
+          message: 'Provide at least one filter: campusId, campusName, connectionStatus, or isActive.',
         });
       }
 
@@ -715,27 +748,41 @@ export const rockPeopleTool: GatewayTool = {
           }
         }
 
-        // Resolve connection status name to a DefinedValue ID
+        // Resolve connection status (name, case-insensitive, or numeric DefinedValue ID)
         let connectionStatusValueId: number | null = null;
         if (connectionStatus) {
-          let statuses: any[] = [];
-          try {
-            statuses = await rockClient.get<any[]>(
-              ctx,
-              `/api/DefinedValues?$filter=DefinedType/Value eq 'Connection Status'`
-            );
-          } catch {
-            // No status list available
+          if (/^\d+$/.test(connectionStatus)) {
+            connectionStatusValueId = parseInt(connectionStatus, 10);
+          } else {
+            let statuses: any[] = [];
+            try {
+              statuses = await rockClient.get<any[]>(
+                ctx,
+                `/api/DefinedValues?$filter=DefinedType/Value eq 'Connection Status'`
+              );
+            } catch {
+              // No status list available
+            }
+            const needle = connectionStatus.toLowerCase();
+            const found = (statuses || []).find((s: any) => String(s.Value).toLowerCase() === needle);
+            if (!found) {
+              return formatResponse(parsed.action, ctx, null, {
+                code: 'CONNECTION_STATUS_NOT_FOUND',
+                message: `No connection status matched '${connectionStatus}'. Available: ${(statuses || []).map((s: any) => s.Value).join(', ') || '(none found)'}. A numeric DefinedValue ID is also accepted.`,
+              });
+            }
+            connectionStatusValueId = found.Id;
           }
-          const needle = connectionStatus.toLowerCase();
-          const found = (statuses || []).find((s: any) => String(s.Value).toLowerCase() === needle);
-          if (!found) {
-            return formatResponse(parsed.action, ctx, null, {
-              code: 'CONNECTION_STATUS_NOT_FOUND',
-              message: `No connection status matched '${connectionStatus}'. Available: ${(statuses || []).map((s: any) => s.Value).join(', ') || '(none found)'}.`,
-            });
+        }
+
+        // Resolve the "Active" RecordStatus DefinedValue for the isActive filter
+        let warning: string | undefined;
+        let activeRecordStatusId: number | null = null;
+        if (isActive !== undefined) {
+          activeRecordStatusId = await resolveDefinedValueId(rockClient, ctx, 'Record Status', 'Active');
+          if (activeRecordStatusId === null) {
+            warning = 'isActive filter was not applied: could not resolve the "Active" RecordStatus DefinedValue.';
           }
-          connectionStatusValueId = found.Id;
         }
 
         const linqClauses: string[] = [];
@@ -748,12 +795,28 @@ export const rockPeopleTool: GatewayTool = {
           linqClauses.push(`ConnectionStatusValueId == ${connectionStatusValueId}`);
           odataClauses.push(`ConnectionStatusValueId eq ${connectionStatusValueId}`);
         }
+        if (isActive !== undefined && activeRecordStatusId !== null) {
+          linqClauses.push(isActive
+            ? `RecordStatusValueId == ${activeRecordStatusId}`
+            : `RecordStatusValueId != ${activeRecordStatusId}`);
+          odataClauses.push(isActive
+            ? `RecordStatusValueId eq ${activeRecordStatusId}`
+            : `RecordStatusValueId ne ${activeRecordStatusId}`);
+        }
+        // If every requested filter failed to resolve, error out rather than
+        // silently counting the whole database.
+        if (linqClauses.length === 0) {
+          return formatResponse(parsed.action, ctx, null, {
+            code: 'FILTER_UNRESOLVED',
+            message: warning ?? 'No filter could be applied.',
+          });
+        }
+
         const where = linqClauses.join(' && ');
         const odataFilter = odataClauses.join(' and ');
 
         // True total via count-only query (not capped by the page size)
         let total: number;
-        let warning: string | undefined;
         try {
           const countResult = await rockClient.post(ctx, '/api/v2/models/people/search', {
             Where: where,
