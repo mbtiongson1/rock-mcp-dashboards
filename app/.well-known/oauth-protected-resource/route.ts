@@ -8,7 +8,7 @@ export async function GET(): Promise<Response> {
   try {
     const app = await getAppContext();
     return jsonCors({
-      resource: app.oauthConfig.resourceServerUrl.href,
+      resource: app.oauthConfig.audience,
       // Advertise THIS server as the authorization server (not the raw Auth0
       // issuer) so spec-compliant clients discover our /.well-known/
       // oauth-authorization-server, which routes DCR to the single-client
