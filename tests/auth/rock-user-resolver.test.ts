@@ -1,9 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-// @ts-ignore
 import { RockUserResolver } from '../../src/auth/rock-user-resolver.js';
-// @ts-ignore
 import { RockClient } from '../../src/rock/client.js';
-// @ts-ignore
 import { OAuthRockContext } from '../../src/http/oauth.js';
 
 describe('RockUserResolver', () => {

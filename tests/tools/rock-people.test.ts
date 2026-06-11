@@ -1,9 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-// @ts-ignore
 import { rockPeopleTool } from '../../src/tools/rock-people.js';
-// @ts-ignore
 import { OAuthRockContext } from '../../src/http/oauth.js';
-// @ts-ignore
 import { clearDefinedValueCache } from '../../src/rock/defined-values.js';
 
 describe('rock_people tool', () => {

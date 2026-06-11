@@ -188,7 +188,7 @@ async function resolvePersonId(client: RockClient, ctx: OAuthRockContext, person
   if (person.id) return person.id;
   if (person.guid) {
     const validGuid = assertValidGuid(person.guid);
-    let results: any[] = [];
+    let results: any[];
     try {
       results = await client.post(ctx, '/api/v2/models/people/search', { Where: `Guid == ${quoteLinqString(validGuid)}` });
     } catch {
@@ -739,7 +739,7 @@ export const rockPeopleTool: GatewayTool = {
             Where: `NickName.Contains(${quoted}) || LastName.Contains(${quoted})`,
             Limit: limit,
           });
-        } catch (_err) {
+        } catch {
           // Fall back to REST v1. v1 has no string-concatenation filter, so a
           // full-name query like "First Last" can never substring-match a single
           // name field — split into first/last tokens instead (mirrors
@@ -959,7 +959,7 @@ export const rockPeopleTool: GatewayTool = {
         if (person.id) {
           try {
             match = await rockClient.get(ctx, `/api/v2/models/people/${person.id}`);
-          } catch (_err) {
+          } catch {
             match = await rockClient.get(ctx, `/api/People/${person.id}`);
           }
         } else if (person.guid) {
@@ -969,7 +969,7 @@ export const rockPeopleTool: GatewayTool = {
             results = await rockClient.post(ctx, '/api/v2/models/people/search', {
               Where: `Guid == ${quoteLinqString(validGuid)}`,
             });
-          } catch (_err) {
+          } catch {
             results = await rockClient.get(ctx, `/api/People?$filter=Guid eq guid${quoteODataString(validGuid)}`);
           }
           if (results && results.length > 0) {
