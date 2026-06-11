@@ -19,3 +19,7 @@ graphify-out
 
 # superpowers scratch (plans/specs) — not part of the shipped repo
 docs/superpowers/
+
+# live-test script state/tokens
+scripts/live-test-state.json
+scripts/live-test-tokens.json
