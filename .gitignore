@@ -13,3 +13,9 @@ dist
 .next
 next-env.d.ts
 *.tsbuildinfo
+
+# graphify generated knowledge-graph output
+graphify-out
+
+# graphify generated knowledge-graph output
+graphify-out

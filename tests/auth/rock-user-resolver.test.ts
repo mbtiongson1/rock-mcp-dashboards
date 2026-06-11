@@ -8,7 +8,6 @@ import { OAuthRockContext } from '../../src/http/oauth.js';
 
 describe('RockUserResolver', () => {
   let mockClient: RockClient;
-  let mockAdminClient: RockClient;
   let resolver: RockUserResolver;
   const mockCtx = {} as OAuthRockContext;
 
@@ -24,11 +23,10 @@ describe('RockUserResolver', () => {
 
   beforeEach(() => {
     mockClient = createMockClient();
-    mockAdminClient = createMockClient();
     resolver = new RockUserResolver(mockClient);
   });
 
-  it('should resolve user by explicit GUID claim if present', async () => {
+  it('should resolve user by explicit GUID claim via Rock v1', async () => {
     const oauth = {
       subject: 'user-123',
       email: 'alex@example.com',
@@ -36,8 +34,8 @@ describe('RockUserResolver', () => {
       rockPersonGuid: '550e8400-e29b-41d4-a716-446655440000', // claim containing person guid
     };
 
-    mockClient.post = vi.fn().mockImplementation(async (_ctx, path, _body: any) => {
-      if (path.includes('/people/search')) {
+    mockClient.get = vi.fn().mockImplementation(async (_ctx, path) => {
+      if (path.includes('/api/People') && path.includes('Guid eq')) {
         return [{ Id: 12, PrimaryAliasId: 24, Guid: '550e8400-e29b-41d4-a716-446655440000', NickName: 'Alex' }];
       }
       return [];
@@ -57,8 +55,8 @@ describe('RockUserResolver', () => {
       accessTokenHash: 'hash',
     };
 
-    mockClient.post = vi.fn().mockImplementation(async (_ctx, path, _body: any) => {
-      if (path.includes('/people/search')) {
+    mockClient.get = vi.fn().mockImplementation(async (_ctx, path) => {
+      if (path.includes('/api/People') && path.includes('Email eq')) {
         return [{ Id: 12, PrimaryAliasId: 24, Guid: 'guid-abc-123' }];
       }
       return [];
@@ -70,6 +68,20 @@ describe('RockUserResolver', () => {
     expect(result.personGuid).toBe('guid-abc-123');
   });
 
+  it('never calls the unavailable v2 API', async () => {
+    const oauth = {
+      subject: 'user-123',
+      email: 'alex@example.com',
+      accessTokenHash: 'hash',
+    };
+
+    mockClient.get = vi.fn().mockResolvedValue([]);
+
+    await resolver.resolve(mockCtx, oauth);
+
+    expect(mockClient.post).not.toHaveBeenCalled();
+  });
+
   it('should return isRsrAdmin true if user is member of RSR role', async () => {
     const oauth = {
       subject: 'user-123',
@@ -77,17 +89,16 @@ describe('RockUserResolver', () => {
       accessTokenHash: 'hash',
     };
 
-    mockClient.post = vi.fn().mockImplementation(async (_ctx, path, _body: any) => {
-      if (path.includes('/people/search')) {
+    mockClient.get = vi.fn().mockImplementation(async (_ctx, path) => {
+      if (path.includes('/api/People')) {
         return [{ Id: 1, PrimaryAliasId: 10, Guid: '550e8400-e29b-41d4-a716-446655440001' }];
       }
-      if (path.includes('/groups/search')) {
-        // Group search for role "RSR - Rock Administration"
+      if (path.includes('/api/Groups')) {
         return [{ Id: 99, Name: 'RSR - Rock Administration' }];
       }
-      if (path.includes('/groupmembers/search')) {
-        // Group member search for personId = 1, groupId = 99, status active (IsSystem or active)
-        return [{ Id: 1001, PersonId: 1, GroupId: 99, GroupMemberStatus: 1 }]; // status 1 is active
+      if (path.includes('/api/GroupMembers')) {
+        expect(path).toContain("GroupMemberStatus eq 'Active'");
+        return [{ Id: 1001, PersonId: 1, GroupId: 99, GroupMemberStatus: 1 }];
       }
       return [];
     });
@@ -97,104 +108,53 @@ describe('RockUserResolver', () => {
     expect(result.isRsrAdmin).toBe(true);
   });
 
-  it('should return isRsrAdmin true when v2 fails and v1 fallback returns active membership', async () => {
+  it('uses the user token for the RSR lookup and fails closed when Rock denies it', async () => {
     const oauth = {
-      subject: 'user-456',
-      email: 'rsr-admin@example.com',
+      subject: 'user-non-admin',
+      email: 'member@example.com',
       accessTokenHash: 'hash',
     };
-
-    mockClient.post = vi.fn().mockImplementation(async (_ctx, path, _body: any) => {
-      if (path.includes('/people/search')) {
-        return [{ Id: 2, PrimaryAliasId: 20, Guid: '550e8400-e29b-41d4-a716-446655440002' }];
-      }
-      if (path.includes('/groups/search')) {
-        return [{ Id: 99, Name: 'RSR - Rock Administration' }];
-      }
-      if (path.includes('/groupmembers/search')) {
-        // Simulate v2 failure (401 unauthorized)
-        throw new Error('Unauthorized');
-      }
-      return [];
-    });
 
     mockClient.get = vi.fn().mockImplementation(async (_ctx, path) => {
-      // v1 fallback: return active membership with enum name 'Active'
-      if (path.includes('/api/GroupMembers')) {
-        // Verify the filter contains 'Active' not '1'
-        expect(path).toContain("GroupMemberStatus eq 'Active'");
-        return [{ Id: 1002, PersonId: 2, GroupId: 99, GroupMemberStatus: 1 }]; // v1 response can still have numeric status
-      }
-      return [];
-    });
-
-    const result = await resolver.resolve(mockCtx, oauth);
-
-    expect(result.isRsrAdmin).toBe(true);
-    expect(mockClient.get).toHaveBeenCalled();
-  });
-
-  it('uses the optional admin client only for RSR admin lookup', async () => {
-    resolver = new RockUserResolver(mockClient, mockAdminClient);
-    const oauth = {
-      subject: 'user-admin-client',
-      email: 'admin-client@example.com',
-      accessTokenHash: 'hash',
-    };
-
-    mockClient.post = vi.fn().mockImplementation(async (_ctx, path, _body: any) => {
-      if (path.includes('/people/search')) {
-        return [{ Id: 3, PrimaryAliasId: 30, Guid: '550e8400-e29b-41d4-a716-446655440003' }];
-      }
-      return [];
-    });
-
-    mockAdminClient.post = vi.fn().mockImplementation(async (_ctx, path, _body: any) => {
-      if (path.includes('/groups/search')) {
-        return [{ Id: 99, Name: 'RSR - Rock Administration' }];
-      }
-      if (path.includes('/groupmembers/search')) {
-        return [{ Id: 1003, PersonId: 3, GroupId: 99, GroupMemberStatus: 1 }];
-      }
-      return [];
-    });
-
-    const result = await resolver.resolve(mockCtx, oauth);
-
-    expect(result.personId).toBe(3);
-    expect(result.isRsrAdmin).toBe(true);
-    expect(mockClient.post).toHaveBeenCalledWith(mockCtx, '/api/v2/models/people/search', expect.any(Object));
-    expect(mockClient.post).not.toHaveBeenCalledWith(mockCtx, '/api/v2/models/groups/search', expect.any(Object));
-    expect(mockClient.post).not.toHaveBeenCalledWith(mockCtx, '/api/v2/models/groupmembers/search', expect.any(Object));
-    expect(mockAdminClient.post).toHaveBeenCalledWith(mockCtx, '/api/v2/models/groups/search', expect.any(Object));
-    expect(mockAdminClient.post).toHaveBeenCalledWith(mockCtx, '/api/v2/models/groupmembers/search', expect.any(Object));
-  });
-
-  it('fails closed when the optional admin client cannot check RSR membership', async () => {
-    resolver = new RockUserResolver(mockClient, mockAdminClient);
-    const oauth = {
-      subject: 'user-admin-client-failure',
-      email: 'admin-client-failure@example.com',
-      accessTokenHash: 'hash',
-    };
-
-    mockClient.post = vi.fn().mockImplementation(async (_ctx, path, _body: any) => {
-      if (path.includes('/people/search')) {
+      if (path.includes('/api/People')) {
         return [{ Id: 4, PrimaryAliasId: 40, Guid: '550e8400-e29b-41d4-a716-446655440004' }];
       }
+      if (path.includes('/api/Groups')) {
+        // Non-admins may not be able to read the RSR group at all
+        throw new Error('401 Unauthorized');
+      }
       return [];
     });
-
-    mockAdminClient.post = vi.fn().mockRejectedValue(new Error('Admin lookup unavailable'));
-    mockAdminClient.get = vi.fn().mockRejectedValue(new Error('Admin fallback unavailable'));
 
     const result = await resolver.resolve(mockCtx, oauth);
 
     expect(result.personId).toBe(4);
     expect(result.isRsrAdmin).toBe(false);
-    expect(mockAdminClient.post).toHaveBeenCalled();
-    expect(mockAdminClient.get).toHaveBeenCalled();
-    expect(mockClient.post).not.toHaveBeenCalledWith(mockCtx, '/api/v2/models/groups/search', expect.any(Object));
-    expect(mockClient.post).not.toHaveBeenCalledWith(mockCtx, '/api/v2/models/groupmembers/search', expect.any(Object));
+  });
+
+  it('fails closed when the membership lookup is denied', async () => {
+    const oauth = {
+      subject: 'user-denied-membership',
+      email: 'denied@example.com',
+      accessTokenHash: 'hash',
+    };
+
+    mockClient.get = vi.fn().mockImplementation(async (_ctx, path) => {
+      if (path.includes('/api/People')) {
+        return [{ Id: 5, PrimaryAliasId: 50, Guid: '550e8400-e29b-41d4-a716-446655440005' }];
+      }
+      if (path.includes('/api/Groups')) {
+        return [{ Id: 99, Name: 'RSR - Rock Administration' }];
+      }
+      if (path.includes('/api/GroupMembers')) {
+        throw new Error('403 Forbidden');
+      }
+      return [];
+    });
+
+    const result = await resolver.resolve(mockCtx, oauth);
+
+    expect(result.personId).toBe(5);
+    expect(result.isRsrAdmin).toBe(false);
   });
 });

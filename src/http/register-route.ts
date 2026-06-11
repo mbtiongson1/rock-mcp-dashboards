@@ -2,7 +2,7 @@ import { getAppContext, CreateAppContextOptions } from './app-context.js';
 import { jsonCors } from './oauth-validate.js';
 import type { Auth0OAuthMetadata } from './oauth.js';
 
-const MAX_CALLBACKS = 50;
+const MAX_REDIRECT_URIS = 10;
 
 /**
  * Validates a redirect URI according to RFC 7591 rules:
@@ -39,36 +39,18 @@ function isLoopbackHost(hostname: string): boolean {
 }
 
 /**
- * Derives the origin (scheme://host[:port]) to allow for a connector based on
- * its redirect URI. Returns null for loopback redirects — the CLI/loopback flow
- * exchanges tokens server-side (no browser CORS), and loopback ports are
- * ephemeral, so adding them as web origins would only bloat the client.
- */
-export function originForRedirectUri(uri: string): string | null {
-  let url: URL;
-  try {
-    url = new URL(uri);
-  } catch {
-    return null;
-  }
-  if (isLoopbackHost(url.hostname)) {
-    return null;
-  }
-  return url.origin;
-}
-
-/**
  * Rewrites Auth0 OAuth metadata so this server presents itself as the
- * authorization server to MCP clients:
- * - `registration_endpoint` points at our single-client /oauth/register proxy
- *   (Auth0's own DCR endpoint is capped — `403 too_many_entities`).
- * - `issuer` is set to this server's origin so the metadata satisfies
- *   RFC 8414 §3.3 (issuer MUST equal the identifier the client used to fetch
- *   it; the Protected Resource Metadata now names this server as the AS).
+ * authorization server to MCP clients. With the proxy model, ALL OAuth
+ * endpoints live on this server:
+ * - `authorization_endpoint` / `token_endpoint` point at /oauth/authorize and
+ *   /oauth/token (the proxy delegates to Auth0 behind the scenes).
+ * - `registration_endpoint` points at the Redis-backed /oauth/register —
+ *   registration never touches Auth0.
+ * - `issuer` is set to this server's origin per RFC 8414 §3.3.
  *
- * Auth0 still issues and signs the tokens — `authorization_endpoint`,
- * `token_endpoint`, and `jwks_uri` are left pointing at Auth0, and token
- * verification (src/http/oauth.ts) keeps validating against the Auth0 issuer.
+ * Auth0 still issues and signs the tokens, so `jwks_uri` keeps pointing at
+ * Auth0 and token verification (src/http/oauth.ts) validates against the
+ * Auth0 issuer.
  */
 export function localizeOAuthMetadata(
   metadata: Auth0OAuthMetadata,
@@ -78,16 +60,23 @@ export function localizeOAuthMetadata(
   return {
     ...metadata,
     issuer: resourceServerUrl.origin,
+    authorization_endpoint: `${base}/oauth/authorize`,
+    token_endpoint: `${base}/oauth/token`,
     registration_endpoint: `${base}/oauth/register`,
+    response_types_supported: ['code'],
+    grant_types_supported: ['authorization_code', 'refresh_token'],
+    token_endpoint_auth_methods_supported: ['none'],
+    code_challenge_methods_supported: ['S256'],
+    scopes_supported: ['read', 'write'],
   };
 }
 
 /**
  * Framework-agnostic handler for POST /oauth/register.
- * Implements RFC 7591 client registration with single-client callback merging.
- *
- * Validates redirect_uris, checks capacity, and calls mergeCallbacks to
- * add them to the shared Auth0 client.
+ * Implements RFC 7591 dynamic client registration backed entirely by Redis:
+ * each connector gets its own opaque client_id, and its redirect URIs are
+ * validated here and enforced by the /oauth/authorize proxy. Auth0 is never
+ * called — its client config stays fixed.
  */
 export async function handleRegisterPost(
   request: Request,
@@ -135,8 +124,17 @@ export async function handleRegisterPost(
       );
     }
 
+    if (redirectUris.length > MAX_REDIRECT_URIS) {
+      return jsonCors(
+        {
+          error: 'invalid_redirect_uri',
+          error_description: `A client may register at most ${MAX_REDIRECT_URIS} redirect_uris`,
+        },
+        { status: 400 }
+      );
+    }
+
     // Guard each redirect_uri
-    const guardedUris: string[] = [];
     for (const uri of redirectUris) {
       if (!isAllowedRedirectUri(uri)) {
         return jsonCors(
@@ -147,60 +145,23 @@ export async function handleRegisterPost(
           { status: 400 }
         );
       }
-      guardedUris.push(uri);
     }
 
-    // Check capacity: fetch current callbacks
-    const clientInfo = await app.managementClient.getClient();
-    const currentCallbackCount = clientInfo.callbacks.length;
+    const clientName = typeof bodyObj.client_name === 'string' ? bodyObj.client_name : undefined;
+    const registration = await app.transactionStore.registerClient([...new Set(redirectUris)], clientName);
 
-    // Compute deduped union size (without actually merging yet)
-    const existingSet = new Set(clientInfo.callbacks);
-    let unionSize = currentCallbackCount;
-    for (const uri of guardedUris) {
-      if (!existingSet.has(uri)) {
-        unionSize++;
-      }
-    }
-
-    if (unionSize > MAX_CALLBACKS) {
-      return jsonCors(
-        {
-          error: 'invalid_redirect_uri',
-          error_description: `Adding these URIs would exceed the callback limit of ${MAX_CALLBACKS}`,
-        },
-        { status: 400 }
-      );
-    }
-
-    // Merge callbacks (required — the authorization-code flow needs the
-    // redirect URI registered on the shared client).
-    const mergedUris = await app.managementClient.mergeCallbacks(guardedUris);
-
-    // Best-effort: auto-allow this connector's origin (Allowed Web Origins +
-    // CORS) so connectors like claude.ai / chatgpt.com work without a hardcoded
-    // allowlist. Origin acceptance is not needed to START the OAuth flow, so a
-    // failure here is logged but never blocks registration.
-    const origins = Array.from(
-      new Set(guardedUris.map(originForRedirectUri).filter((o): o is string => o !== null))
-    );
-    if (origins.length > 0) {
-      try {
-        await app.managementClient.mergeOrigins(origins);
-      } catch (originErr) {
-        console.error('[register POST] Origin merge failed (non-fatal):', {
-          origins,
-          error: originErr instanceof Error ? originErr.message : String(originErr),
-        });
-      }
-    }
+    console.log('[register POST] Registered connector:', {
+      clientId: registration.clientId,
+      redirectUris: registration.redirectUris,
+      clientName,
+    });
 
     // Return RFC 7591 registration response (201)
     return jsonCors(
       {
-        client_id: clientInfo.client_id,
-        client_name: 'Rock MCP',
-        redirect_uris: mergedUris,
+        client_id: registration.clientId,
+        client_name: clientName ?? 'Rock MCP',
+        redirect_uris: registration.redirectUris,
         grant_types: ['authorization_code', 'refresh_token'],
         response_types: ['code'],
         token_endpoint_auth_method: 'none',
@@ -208,9 +169,6 @@ export async function handleRegisterPost(
       { status: 201 }
     );
   } catch (err) {
-    // Log rich context for diagnosis (status codes are included in the thrown
-    // Auth0ManagementClient errors; secrets/tokens are never in those messages),
-    // but don't expose internal details in the response.
     console.error('[register POST] Registration failed:', {
       error: err instanceof Error ? err.message : String(err),
     });
