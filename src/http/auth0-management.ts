@@ -13,6 +13,24 @@ export interface Auth0ClientInfo {
   callbacks: string[];
 }
 
+export interface Auth0ClientOrigins {
+  web_origins: string[];
+  allowed_origins: string[];
+}
+
+/** Union of two string lists, preserving existing order then appending new, deduped. */
+function unionPreserveOrder(existing: string[], additions: string[]): string[] {
+  const seen = new Set(existing);
+  const result = [...existing];
+  for (const item of additions) {
+    if (!seen.has(item)) {
+      seen.add(item);
+      result.push(item);
+    }
+  }
+  return result;
+}
+
 interface CachedToken {
   access_token: string;
   expires_at: number;
@@ -198,5 +216,60 @@ export class Auth0ManagementClient {
     }
 
     return union;
+  }
+
+  /**
+   * Merges new origins into the shared client's Allowed Web Origins
+   * (`web_origins`) and Allowed Origins / CORS (`allowed_origins`).
+   *
+   * Used to auto-allow a connector's origin (e.g. https://claude.ai,
+   * https://chatgpt.com) when it registers, so we don't have to hardcode a
+   * list of known connectors. Dedupes, preserves order, and skips the PATCH
+   * when nothing changes. Callers should treat this as best-effort: origin
+   * acceptance is not required for the authorization-code flow to start, so a
+   * failure here must not block registration.
+   */
+  public async mergeOrigins(newOrigins: string[]): Promise<Auth0ClientOrigins> {
+    if (newOrigins.length === 0) {
+      return { web_origins: [], allowed_origins: [] };
+    }
+
+    const token = await this.getAccessToken();
+    const base = `${this.config.issuer}api/v2/clients/${encodeURIComponent(this.sharedClientId)}`;
+
+    const getResponse = await this.fetchFn(
+      `${base}?fields=web_origins,allowed_origins&include_fields=true`,
+      { method: 'GET', headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (!getResponse.ok) {
+      throw new Error(
+        `Failed to fetch Auth0 client origins: ${getResponse.status} ${getResponse.statusText} (${base})`
+      );
+    }
+
+    const data = await getResponse.json() as Record<string, unknown>;
+    const currentWeb = Array.isArray(data.web_origins) ? (data.web_origins as string[]) : [];
+    const currentAllowed = Array.isArray(data.allowed_origins) ? (data.allowed_origins as string[]) : [];
+
+    const webOrigins = unionPreserveOrder(currentWeb, newOrigins);
+    const allowedOrigins = unionPreserveOrder(currentAllowed, newOrigins);
+
+    // Nothing new — skip the PATCH.
+    if (webOrigins.length === currentWeb.length && allowedOrigins.length === currentAllowed.length) {
+      return { web_origins: webOrigins, allowed_origins: allowedOrigins };
+    }
+
+    const patchResponse = await this.fetchFn(base, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ web_origins: webOrigins, allowed_origins: allowedOrigins }),
+    });
+    if (!patchResponse.ok) {
+      throw new Error(
+        `Failed to update Auth0 client origins: ${patchResponse.status} ${patchResponse.statusText} (${base})`
+      );
+    }
+
+    return { web_origins: webOrigins, allowed_origins: allowedOrigins };
   }
 }

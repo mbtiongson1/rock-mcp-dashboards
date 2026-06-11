@@ -39,6 +39,25 @@ function isLoopbackHost(hostname: string): boolean {
 }
 
 /**
+ * Derives the origin (scheme://host[:port]) to allow for a connector based on
+ * its redirect URI. Returns null for loopback redirects — the CLI/loopback flow
+ * exchanges tokens server-side (no browser CORS), and loopback ports are
+ * ephemeral, so adding them as web origins would only bloat the client.
+ */
+export function originForRedirectUri(uri: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(uri);
+  } catch {
+    return null;
+  }
+  if (isLoopbackHost(url.hostname)) {
+    return null;
+  }
+  return url.origin;
+}
+
+/**
  * Rewrites Auth0 OAuth metadata so this server presents itself as the
  * authorization server to MCP clients:
  * - `registration_endpoint` points at our single-client /oauth/register proxy
@@ -154,8 +173,27 @@ export async function handleRegisterPost(
       );
     }
 
-    // Merge callbacks
+    // Merge callbacks (required — the authorization-code flow needs the
+    // redirect URI registered on the shared client).
     const mergedUris = await app.managementClient.mergeCallbacks(guardedUris);
+
+    // Best-effort: auto-allow this connector's origin (Allowed Web Origins +
+    // CORS) so connectors like claude.ai / chatgpt.com work without a hardcoded
+    // allowlist. Origin acceptance is not needed to START the OAuth flow, so a
+    // failure here is logged but never blocks registration.
+    const origins = Array.from(
+      new Set(guardedUris.map(originForRedirectUri).filter((o): o is string => o !== null))
+    );
+    if (origins.length > 0) {
+      try {
+        await app.managementClient.mergeOrigins(origins);
+      } catch (originErr) {
+        console.error('[register POST] Origin merge failed (non-fatal):', {
+          origins,
+          error: originErr instanceof Error ? originErr.message : String(originErr),
+        });
+      }
+    }
 
     // Return RFC 7591 registration response (201)
     return jsonCors(
@@ -170,8 +208,12 @@ export async function handleRegisterPost(
       { status: 201 }
     );
   } catch (err) {
-    // Don't expose internal error details in response
-    console.error('[register POST] Error:', err);
+    // Log rich context for diagnosis (status codes are included in the thrown
+    // Auth0ManagementClient errors; secrets/tokens are never in those messages),
+    // but don't expose internal details in the response.
+    console.error('[register POST] Registration failed:', {
+      error: err instanceof Error ? err.message : String(err),
+    });
     return jsonCors(
       {
         error: 'server_error',

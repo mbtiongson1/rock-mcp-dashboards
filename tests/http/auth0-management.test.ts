@@ -596,6 +596,82 @@ describe('Auth0ManagementClient', () => {
     });
   });
 
+  describe('mergeOrigins', () => {
+    it('adds new origins to web_origins and allowed_origins via PATCH', async () => {
+      let patchBody: any = null;
+      const fetchFn = vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.includes('/oauth/token')) {
+          return new Response(JSON.stringify({ access_token: 'token', expires_in: 3600 }),
+            { status: 200, headers: { 'content-type': 'application/json' } });
+        }
+        if (url.includes('/api/v2/clients/') && init?.method === 'GET') {
+          return new Response(JSON.stringify({
+            web_origins: ['https://rock-mcp.favor.church'],
+            allowed_origins: ['https://rock-mcp.favor.church'],
+          }), { status: 200, headers: { 'content-type': 'application/json' } });
+        }
+        if (url.includes('/api/v2/clients/') && init?.method === 'PATCH') {
+          patchBody = JSON.parse(init?.body as string);
+          return new Response(JSON.stringify({ client_id: 'shared-client-id' }),
+            { status: 200, headers: { 'content-type': 'application/json' } });
+        }
+        throw new Error(`Unexpected URL/method: ${url} ${init?.method}`);
+      });
+
+      const client = new Auth0ManagementClient(
+        baseConfig, 'mgmt-client-id', 'mgmt-client-secret', 'shared-client-id', { fetchFn }
+      );
+
+      const result = await client.mergeOrigins(['https://claude.ai']);
+
+      expect(result.web_origins).toEqual(['https://rock-mcp.favor.church', 'https://claude.ai']);
+      expect(result.allowed_origins).toEqual(['https://rock-mcp.favor.church', 'https://claude.ai']);
+      expect(patchBody).toEqual({
+        web_origins: ['https://rock-mcp.favor.church', 'https://claude.ai'],
+        allowed_origins: ['https://rock-mcp.favor.church', 'https://claude.ai'],
+      });
+    });
+
+    it('is idempotent: skips PATCH when origins already present', async () => {
+      const fetchFn = vi.fn(async (url: string) => {
+        if (url.includes('/oauth/token')) {
+          return new Response(JSON.stringify({ access_token: 'token', expires_in: 3600 }),
+            { status: 200, headers: { 'content-type': 'application/json' } });
+        }
+        if (url.includes('/api/v2/clients/')) {
+          return new Response(JSON.stringify({
+            web_origins: ['https://claude.ai'],
+            allowed_origins: ['https://claude.ai'],
+          }), { status: 200, headers: { 'content-type': 'application/json' } });
+        }
+        throw new Error(`Unexpected URL: ${url}`);
+      });
+
+      const client = new Auth0ManagementClient(
+        baseConfig, 'mgmt-client-id', 'mgmt-client-secret', 'shared-client-id', { fetchFn }
+      );
+
+      await client.mergeOrigins(['https://claude.ai']);
+
+      expect(fetchFn).not.toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ method: 'PATCH' })
+      );
+    });
+
+    it('does no network calls when given no origins', async () => {
+      const fetchFn = vi.fn();
+      const client = new Auth0ManagementClient(
+        baseConfig, 'mgmt-client-id', 'mgmt-client-secret', 'shared-client-id', { fetchFn }
+      );
+
+      const result = await client.mergeOrigins([]);
+
+      expect(result).toEqual({ web_origins: [], allowed_origins: [] });
+      expect(fetchFn).not.toHaveBeenCalled();
+    });
+  });
+
   describe('error handling', () => {
     it('throws on non-2xx token endpoint response with status in message', async () => {
       const fetchFn = vi.fn(async (url: string) => {

@@ -1,5 +1,5 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
-import { handleRegisterPost, isAllowedRedirectUri, localizeOAuthMetadata } from '../../src/http/register-route.js';
+import { handleRegisterPost, isAllowedRedirectUri, localizeOAuthMetadata, originForRedirectUri } from '../../src/http/register-route.js';
 import { resetAppContextForTests, CreateAppContextOptions } from '../../src/http/app-context.js';
 import type { Auth0OAuthConfig, Auth0OAuthMetadata } from '../../src/http/oauth.js';
 import type { Auth0ManagementClient } from '../../src/http/auth0-management.js';
@@ -48,6 +48,10 @@ function mockManagementClient(
       }
       return union;
     }),
+    mergeOrigins: vi.fn(async (origins: string[]) => ({
+      web_origins: origins,
+      allowed_origins: origins,
+    })),
   } as any as Auth0ManagementClient;
 }
 
@@ -111,6 +115,23 @@ describe('isAllowedRedirectUri', () => {
   });
 });
 
+describe('originForRedirectUri', () => {
+  it('returns the origin for https redirect URIs', () => {
+    expect(originForRedirectUri('https://claude.ai/api/mcp/auth_callback')).toBe('https://claude.ai');
+    expect(originForRedirectUri('https://chatgpt.com/x/y?z=1')).toBe('https://chatgpt.com');
+  });
+
+  it('returns null for loopback redirect URIs', () => {
+    expect(originForRedirectUri('http://localhost:58187/callback')).toBeNull();
+    expect(originForRedirectUri('http://127.0.0.1:9000/cb')).toBeNull();
+    expect(originForRedirectUri('http://[::1]:9000/cb')).toBeNull();
+  });
+
+  it('returns null for invalid URIs', () => {
+    expect(originForRedirectUri('not a uri')).toBeNull();
+  });
+});
+
 describe('localizeOAuthMetadata', () => {
   it('sets registration_endpoint to resource server /oauth/register', () => {
     const result = localizeOAuthMetadata(oauthMetadata, new URL('https://mcp.example.com/'));
@@ -164,6 +185,48 @@ describe('handleRegisterPost', () => {
     await handleRegisterPost(request, appOptions(mgmtClient));
 
     expect(mgmtClient.mergeCallbacks).toHaveBeenCalledWith(['https://new.example.com/callback']);
+  });
+
+  it('auto-merges non-loopback origins, skipping loopback redirect URIs', async () => {
+    const mgmtClient = mockManagementClient([]);
+    const request = registerRequest({
+      redirect_uris: [
+        'https://claude.ai/api/mcp/auth_callback',
+        'https://chatgpt.com/connector/callback',
+        'http://localhost:58187/callback', // loopback — must be skipped
+      ],
+    });
+
+    const response = await handleRegisterPost(request, appOptions(mgmtClient));
+
+    expect(response.status).toBe(201);
+    expect(mgmtClient.mergeOrigins).toHaveBeenCalledWith([
+      'https://claude.ai',
+      'https://chatgpt.com',
+    ]);
+  });
+
+  it('still succeeds (201) if origin merge throws', async () => {
+    const mgmtClient = mockManagementClient([]);
+    vi.spyOn(mgmtClient, 'mergeOrigins').mockRejectedValueOnce(new Error('web_origins rejected'));
+    const request = registerRequest({
+      redirect_uris: ['https://claude.ai/api/mcp/auth_callback'],
+    });
+
+    const response = await handleRegisterPost(request, appOptions(mgmtClient));
+
+    expect(response.status).toBe(201);
+  });
+
+  it('does not call mergeOrigins when only loopback redirect URIs are given', async () => {
+    const mgmtClient = mockManagementClient([]);
+    const request = registerRequest({
+      redirect_uris: ['http://localhost:58187/callback'],
+    });
+
+    await handleRegisterPost(request, appOptions(mgmtClient));
+
+    expect(mgmtClient.mergeOrigins).not.toHaveBeenCalled();
   });
 
   it('returns merged redirect_uris in response', async () => {
