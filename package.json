@@ -1,6 +1,6 @@
 {
   "name": "rock-mcp",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Rock RMS MCP Server and MCP Apps for Favor Church Manila",
   "main": "dist/server.js",
   "type": "module",
