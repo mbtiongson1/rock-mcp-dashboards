@@ -26,6 +26,25 @@ describe('RockUserResolver', () => {
     resolver = new RockUserResolver(mockClient);
   });
 
+  it('resolves the user via GetCurrentPerson first (no claims needed)', async () => {
+    const oauth = {
+      subject: 'google-oauth2|123',
+      accessTokenHash: 'hash',
+    };
+
+    mockClient.get = vi.fn().mockImplementation(async (_ctx, path) => {
+      if (path === '/api/People/GetCurrentPerson') {
+        return { Id: 5, PrimaryAliasId: 14, Guid: '550e8400-e29b-41d4-a716-446655440005' };
+      }
+      return [];
+    });
+
+    const result = await resolver.resolve(mockCtx, oauth);
+
+    expect(result.personId).toBe(5);
+    expect(result.personAliasId).toBe(14);
+  });
+
   it('should resolve user by explicit GUID claim via Rock v1', async () => {
     const oauth = {
       subject: 'user-123',

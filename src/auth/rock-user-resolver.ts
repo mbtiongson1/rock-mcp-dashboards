@@ -52,8 +52,21 @@ export class RockUserResolver {
     // Rock v1 (OData) only — the v2 REST API is unavailable on this instance
     // (401s even with valid credentials).
 
-    // 1. Resolve by explicit Guid claim if present
-    if (oauth.rockPersonGuid) {
+    // 1. Ask Rock who the Bearer token belongs to. Rock validates the JWT via
+    // its JSON Web Token Configuration and resolves the person through the
+    // Auth0 person search key, so this works even when the access token
+    // carries no email claim (Auth0 puts email only in the id_token).
+    try {
+      const me = await this.rockClient.get<any>(ctx, '/api/People/GetCurrentPerson');
+      if (me && me.Id) {
+        person = me;
+      }
+    } catch {
+      // Ignore — fall back to claim-based lookups
+    }
+
+    // 2. Resolve by explicit Guid claim if present
+    if (!person && oauth.rockPersonGuid) {
       const validGuid = assertValidGuid(oauth.rockPersonGuid);
       try {
         const results = await this.rockClient.get<any[]>(ctx, `/api/People?$filter=Guid eq guid${quoteODataString(validGuid)}`);
@@ -65,7 +78,7 @@ export class RockUserResolver {
       }
     }
 
-    // 2. Fallback to resolving by email
+    // 3. Fallback to resolving by email
     if (!person && oauth.email) {
       try {
         const results = await this.rockClient.get<any[]>(ctx, `/api/People?$filter=Email eq ${quoteODataString(oauth.email)}`);
