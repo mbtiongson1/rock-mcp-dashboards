@@ -14,7 +14,7 @@ const rockWriteSchema = z.discriminatedUnion('action', [
     data: z.record(z.unknown()),
     dryRun: z.boolean().default(true).describe('Preview-only by default. Set dryRun:false AND commit:true to apply.'),
     commit: z.boolean().default(false).describe('Must be true (with dryRun:false) to actually write.'),
-    reason: z.string().optional().describe('Justification for the change; recorded in the audit log.'),
+    reason: z.string().min(1).describe('Required justification for the change; recorded in the audit log.'),
   }),
   z.object({
     action: z.literal('patch'),
@@ -23,7 +23,7 @@ const rockWriteSchema = z.discriminatedUnion('action', [
     data: z.record(z.unknown()),
     dryRun: z.boolean().default(true).describe('Preview-only by default. Set dryRun:false AND commit:true to apply.'),
     commit: z.boolean().default(false).describe('Must be true (with dryRun:false) to actually write.'),
-    reason: z.string().optional().describe('Justification for the change; recorded in the audit log.'),
+    reason: z.string().min(1).describe('Required justification for the change; recorded in the audit log.'),
   }),
   z.object({
     action: z.literal('patchAttributes'),
@@ -32,7 +32,7 @@ const rockWriteSchema = z.discriminatedUnion('action', [
     attributes: z.record(z.unknown()),
     dryRun: z.boolean().default(true).describe('Preview-only by default. Set dryRun:false AND commit:true to apply.'),
     commit: z.boolean().default(false).describe('Must be true (with dryRun:false) to actually write.'),
-    reason: z.string().optional().describe('Justification for the change; recorded in the audit log.'),
+    reason: z.string().min(1).describe('Required justification for the change; recorded in the audit log.'),
   }),
   z.object({
     action: z.literal('delete'),
@@ -40,7 +40,7 @@ const rockWriteSchema = z.discriminatedUnion('action', [
     id: z.union([z.string(), z.coerce.number()]),
     dryRun: z.boolean().default(true).describe('Preview-only by default. Set dryRun:false AND commit:true to apply.'),
     commit: z.boolean().default(false).describe('Must be true (with dryRun:false) to actually write.'),
-    reason: z.string().optional().describe('Justification for the change; recorded in the audit log.'),
+    reason: z.string().min(1).describe('Required justification for the change; recorded in the audit log.'),
   }),
   z.object({
     action: z.literal('bulkPatch'),
@@ -48,7 +48,7 @@ const rockWriteSchema = z.discriminatedUnion('action', [
     items: z.array(z.object({ id: z.union([z.string(), z.coerce.number()]), data: z.record(z.unknown()) })).min(1),
     dryRun: z.boolean().default(true).describe('Preview-only by default. Set dryRun:false AND commit:true to apply.'),
     commit: z.boolean().default(false).describe('Must be true (with dryRun:false) to actually write.'),
-    reason: z.string().optional().describe('Justification for the change; recorded in the audit log.'),
+    reason: z.string().min(1).describe('Required justification for the change; recorded in the audit log.'),
   }),
 ]);
 
@@ -88,13 +88,6 @@ export const rockWriteTool: GatewayTool = {
 
     const parsed = rockWriteSchema.parse(args);
     const { action, model, dryRun, commit, reason } = parsed;
-
-    if (!reason || reason.trim().length === 0) {
-      return formatResponse(action, ctx, null, {
-        code: 'VALIDATION_ERROR',
-        message: 'A human-readable reason is required for all write operations.',
-      });
-    }
 
     const rockClient = (ctx as any).rockClient as RockClient;
     if (!rockClient) {

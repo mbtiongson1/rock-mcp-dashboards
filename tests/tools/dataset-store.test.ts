@@ -164,6 +164,26 @@ describe('InMemoryDatasetStore', () => {
     const retrieved = await store.get('dataset-123', mockCtx);
     expect(retrieved).toEqual(testDataset);
   });
+
+  it('should reject delete from a different user (ownership enforcement)', async () => {
+    await store.put(testDataset);
+
+    const otherCtx = {
+      ...mockCtx,
+      oauth: {
+        ...mockCtx.oauth,
+        subject: 'other-user-456',
+      },
+    } as OAuthRockContext;
+
+    await expect(store.delete('dataset-123', otherCtx)).rejects.toThrow(
+      'Access denied: dataset ownership mismatch'
+    );
+
+    // Verify the dataset was NOT deleted (still accessible by owner)
+    const retrieved = await store.get('dataset-123', mockCtx);
+    expect(retrieved).not.toBeNull();
+  });
 });
 
 describe('RedisDatasetStore', () => {

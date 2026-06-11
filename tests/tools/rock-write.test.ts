@@ -41,14 +41,13 @@ describe('rock_write tool', () => {
   });
 
   it('should fail if reason is missing', async () => {
-    const result = await rockWriteTool.handle(
-      { action: 'patch', model: 'people', id: 123, data: { NickName: 'Alex' }, commit: true },
-      null,
-      mockCtx
-    );
-    const response = JSON.parse(result.content[0].text!);
-    expect(response.ok).toBe(false);
-    expect(response.error.message).toContain('reason');
+    await expect(
+      rockWriteTool.handle(
+        { action: 'patch', model: 'people', id: 123, data: { NickName: 'Alex' }, commit: true },
+        null,
+        mockCtx
+      )
+    ).rejects.toThrow();
   });
 
   it('should not mutate if dryRun is true', async () => {
@@ -135,14 +134,13 @@ describe('rock_write tool', () => {
 
   // ===== CREATE ACTION TESTS =====
   it('create: should fail if reason is missing', async () => {
-    const result = await rockWriteTool.handle(
-      { action: 'create', model: 'notes', data: { EntityId: 123, Text: 'Hello' }, commit: true },
-      null,
-      mockCtx
-    );
-    const response = JSON.parse(result.content[0].text!);
-    expect(response.ok).toBe(false);
-    expect(response.error.message).toContain('reason');
+    await expect(
+      rockWriteTool.handle(
+        { action: 'create', model: 'notes', data: { EntityId: 123, Text: 'Hello' }, commit: true },
+        null,
+        mockCtx
+      )
+    ).rejects.toThrow();
   });
 
   it('create: should not mutate if dryRun is true', async () => {
@@ -203,14 +201,13 @@ describe('rock_write tool', () => {
 
   // ===== PATCH ATTRIBUTES ACTION TESTS =====
   it('patchAttributes: should fail if reason is missing', async () => {
-    const result = await rockWriteTool.handle(
-      { action: 'patchAttributes', model: 'people', id: 123, attributes: { customAttr: 'value' }, commit: true },
-      null,
-      mockCtx
-    );
-    const response = JSON.parse(result.content[0].text!);
-    expect(response.ok).toBe(false);
-    expect(response.error.message).toContain('reason');
+    await expect(
+      rockWriteTool.handle(
+        { action: 'patchAttributes', model: 'people', id: 123, attributes: { customAttr: 'value' }, commit: true },
+        null,
+        mockCtx
+      )
+    ).rejects.toThrow();
   });
 
   it('patchAttributes: should not mutate if dryRun is true', async () => {
@@ -259,14 +256,13 @@ describe('rock_write tool', () => {
 
   // ===== BULK PATCH ACTION TESTS =====
   it('bulkPatch: should fail if reason is missing', async () => {
-    const result = await rockWriteTool.handle(
-      { action: 'bulkPatch', model: 'people', items: [{ id: 1, data: { Email: 'test@example.com' } }], commit: true },
-      null,
-      mockCtx
-    );
-    const response = JSON.parse(result.content[0].text!);
-    expect(response.ok).toBe(false);
-    expect(response.error.message).toContain('reason');
+    await expect(
+      rockWriteTool.handle(
+        { action: 'bulkPatch', model: 'people', items: [{ id: 1, data: { Email: 'test@example.com' } }], commit: true },
+        null,
+        mockCtx
+      )
+    ).rejects.toThrow();
   });
 
   it('bulkPatch: dryRun should return total count', async () => {

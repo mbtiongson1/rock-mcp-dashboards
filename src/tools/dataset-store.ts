@@ -74,7 +74,10 @@ export class InMemoryDatasetStore implements DatasetStore {
     return dataset;
   }
 
-  public async delete(datasetId: string, _ctx: OAuthRockContext): Promise<void> {
+  public async delete(datasetId: string, ctx: OAuthRockContext): Promise<void> {
+    const dataset = this.datasets.get(datasetId);
+    if (!dataset) return;
+    enforceOwnership(dataset, ctx);
     this.datasets.delete(datasetId);
   }
 }
