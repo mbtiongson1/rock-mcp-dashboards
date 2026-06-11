@@ -44,15 +44,9 @@ export interface Auth0OAuthConfig {
   discoveryUrl: URL;
 }
 
-export interface Auth0ManagementConfig {
-  clientId: string;
-  clientSecret: string;
-  sharedPublicClientId: string;
-}
-
 export type Auth0OAuthMetadata = OAuthMetadata & {
   jwks_uri: string;
-  registration_endpoint: string;
+  registration_endpoint?: string;
 };
 
 export type OAuthEnv = Record<string, string | undefined>;
@@ -75,9 +69,6 @@ export interface Auth0OAuthTokenVerifierDeps {
 const AUTH0_ISSUER_KEYS = ['AUTH0_ISSUER', 'AUTH0_DOMAIN', 'OAUTH_ISSUER', 'OAUTH_DOMAIN'];
 const AUTH0_AUDIENCE_KEYS = ['AUTH0_AUDIENCE', 'OAUTH_AUDIENCE'];
 const MCP_PUBLIC_URL_KEYS = ['MCP_PUBLIC_URL', 'OAUTH_PUBLIC_URL', 'OAUTH_RESOURCE_SERVER_URL'];
-const AUTH0_CLIENT_ID_KEYS = ['AUTH0_CLIENT_ID'];
-const AUTH0_MANAGEMENT_CLIENT_ID_KEYS = ['AUTH0_MANAGEMENT_CLIENT_ID'];
-const AUTH0_MANAGEMENT_CLIENT_SECRET_KEYS = ['AUTH0_MANAGEMENT_CLIENT_SECRET'];
 
 export function loadAuth0Config(env: OAuthEnv = process.env): Auth0OAuthConfig {
   const issuerOrDomain = firstEnvValue(env, AUTH0_ISSUER_KEYS);
@@ -108,29 +99,6 @@ export function loadAuth0Config(env: OAuthEnv = process.env): Auth0OAuthConfig {
   };
 }
 
-export function loadAuth0ManagementConfig(env: OAuthEnv = process.env): Auth0ManagementConfig {
-  const sharedPublicClientId = firstEnvValue(env, AUTH0_CLIENT_ID_KEYS);
-  if (!sharedPublicClientId) {
-    throw new Error('AUTH0_CLIENT_ID env var is required');
-  }
-
-  const clientId = firstEnvValue(env, AUTH0_MANAGEMENT_CLIENT_ID_KEYS);
-  if (!clientId) {
-    throw new Error('AUTH0_MANAGEMENT_CLIENT_ID env var is required');
-  }
-
-  const clientSecret = firstEnvValue(env, AUTH0_MANAGEMENT_CLIENT_SECRET_KEYS);
-  if (!clientSecret) {
-    throw new Error('AUTH0_MANAGEMENT_CLIENT_SECRET env var is required');
-  }
-
-  return {
-    clientId,
-    clientSecret,
-    sharedPublicClientId,
-  };
-}
-
 export async function fetchAuth0OAuthMetadata(
   options: FetchAuth0OAuthMetadataOptions = {}
 ): Promise<Auth0OAuthMetadata> {
@@ -153,12 +121,6 @@ export async function fetchAuth0OAuthMetadata(
 
   const authorizationEndpoint = requireHttpsUrl(metadata.authorization_endpoint, 'authorization_endpoint');
   const tokenEndpoint = requireHttpsUrl(metadata.token_endpoint, 'token_endpoint');
-  const registrationEndpoint = stringClaim(metadata.registration_endpoint);
-  if (!registrationEndpoint) {
-    throw new Error('Auth0 Dynamic Client Registration endpoint is missing; enable DCR on the Auth0 tenant');
-  }
-  requireHttpsUrl(registrationEndpoint, 'registration_endpoint');
-
   const jwksUri = stringClaim(metadata.jwks_uri);
   if (!jwksUri) {
     throw new Error('Auth0 discovery metadata is missing jwks_uri');
@@ -170,7 +132,6 @@ export async function fetchAuth0OAuthMetadata(
     issuer,
     authorization_endpoint: authorizationEndpoint,
     token_endpoint: tokenEndpoint,
-    registration_endpoint: registrationEndpoint,
     jwks_uri: jwksUri,
   } as Auth0OAuthMetadata;
 }

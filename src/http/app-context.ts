@@ -6,12 +6,12 @@ import {
   fetchAuth0OAuthMetadata,
   getOAuthProtectedResourceMetadataUrl,
   loadAuth0Config,
-  loadAuth0ManagementConfig,
   OAuthEnv,
 } from './oauth.js';
-import { Auth0ManagementClient } from './auth0-management.js';
+import { loadOAuthProxyClientConfig, OAuthProxyClientConfig } from './oauth-proxy.js';
+import { OAuthTransactionStore } from './oauth-transactions.js';
 import { RockClient, RockClientConfig, RockClientImpl } from '../rock/client.js';
-import { ApiKeyStrategy, UserJwtStrategy } from '../rock/auth-strategy.js';
+import { UserJwtStrategy } from '../rock/auth-strategy.js';
 import { RockUserResolver } from '../auth/rock-user-resolver.js';
 import { DiscoveryService } from '../discovery/discovery-service.js';
 import { InMemoryDatasetStore, RedisDatasetStore, DatasetStore } from '../tools/dataset-store.js';
@@ -27,7 +27,8 @@ export interface CreateAppContextOptions {
   verifier?: OAuthTokenVerifier;
   fetchFn?: (url: URL) => Promise<Response>;
   rockClientFactory?: (config: RockClientConfig) => RockClient;
-  managementClient?: Auth0ManagementClient;
+  oauthProxyClient?: OAuthProxyClientConfig;
+  transactionStore?: OAuthTransactionStore;
   rockUserResolver?: RockUserResolver;
 }
 
@@ -41,7 +42,10 @@ export interface AppContext {
   oauthMetadata: Auth0OAuthMetadata;
   verifier: OAuthTokenVerifier;
   resourceMetadataUrl: string;
-  managementClient: Auth0ManagementClient;
+  /** Auth0 confidential client used by the OAuth proxy (AUTH0_CLIENT_ID/SECRET). */
+  oauthProxyClient: OAuthProxyClientConfig;
+  /** Redis-backed connector registrations + authorize/code transactions. */
+  transactionStore: OAuthTransactionStore;
   rockClient: RockClient;
   rockUserResolver: RockUserResolver;
   discoveryService: DiscoveryService;
@@ -76,29 +80,13 @@ export async function buildAppContext(options: CreateAppContextOptions = {}): Pr
     credentialStrategy: new UserJwtStrategy(),
   });
 
-  const adminApiKey = env.ROCK_API_KEY?.trim();
-  const adminClient = adminApiKey
-    ? createRockClient({
-        baseUrl: rockBaseUrl,
-        credentialStrategy: new ApiKeyStrategy(adminApiKey),
-      })
-    : undefined;
-
   const redis = createRedisClient();
 
-  const managementClient = options.managementClient || (() => {
-    const mgmtCfg = loadAuth0ManagementConfig(env);
-    return new Auth0ManagementClient(
-      oauthConfig,
-      mgmtCfg.clientId,
-      mgmtCfg.clientSecret,
-      mgmtCfg.sharedPublicClientId,
-      { redis }
-    );
-  })();
+  const oauthProxyClient = options.oauthProxyClient || loadOAuthProxyClientConfig(env);
+  const transactionStore = options.transactionStore || new OAuthTransactionStore(redis);
 
   const discoveryService = new DiscoveryService(rockClient, redis);
-  const rockUserResolver = options.rockUserResolver ?? new RockUserResolver(rockClient, adminClient);
+  const rockUserResolver = options.rockUserResolver ?? new RockUserResolver(rockClient);
   const datasetStore: DatasetStore = redis
     ? new RedisDatasetStore(redis)
     : new InMemoryDatasetStore();
@@ -127,7 +115,8 @@ export async function buildAppContext(options: CreateAppContextOptions = {}): Pr
     oauthMetadata,
     verifier,
     resourceMetadataUrl,
-    managementClient,
+    oauthProxyClient,
+    transactionStore,
     rockClient,
     rockUserResolver,
     discoveryService,
