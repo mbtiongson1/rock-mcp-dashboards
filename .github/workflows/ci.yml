@@ -14,15 +14,15 @@ jobs:
         node-version: ['22']
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node-version }}
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: 11.2.2
 
@@ -33,7 +33,7 @@ jobs:
           echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
 
       - name: Setup pnpm cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
           key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
@@ -44,7 +44,10 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Type check
-        run: npx tsc --noEmit -p tsconfig.json
+        # Run both tsconfigs (app + server). The server config (tsconfig.server.json)
+        # covers src/ — checking only tsconfig.json previously let server-only type
+        # breakage (e.g. from major dependency bumps) pass CI undetected.
+        run: pnpm typecheck
 
       - name: Run tests
         # Integration tests are guarded with it.runIf(hasEnv) and skip cleanly without Rock env vars.
