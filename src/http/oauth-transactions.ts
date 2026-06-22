@@ -42,6 +42,11 @@ export interface ProxyCodeRecord {
 
 export const TRANSACTION_TTL_SECONDS = 600;
 export const PROXY_CODE_TTL_SECONDS = 60;
+export const CLIENT_REGISTRATION_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 days
+
+// Rate limiting for DCR: 10 registrations per IP per hour
+export const DCR_RATE_LIMIT_REQUESTS = 10;
+export const DCR_RATE_LIMIT_WINDOW_SECONDS = 60 * 60; // 1 hour
 
 interface MemoryEntry {
   value: unknown;
@@ -63,7 +68,7 @@ export class OAuthTransactionStore {
       clientName,
       createdAt: Date.now(),
     };
-    await this.set(this.clientKey(registration.clientId), registration);
+    await this.set(this.clientKey(registration.clientId), registration, CLIENT_REGISTRATION_TTL_SECONDS);
     return registration;
   }
 
@@ -72,6 +77,17 @@ export class OAuthTransactionStore {
       return null;
     }
     return this.get<ConnectorRegistration>(this.clientKey(clientId));
+  }
+
+  /**
+   * Refreshes the TTL on a client registration when it's actively used (e.g., on successful
+   * authorize). This keeps active clients from expiring while preventing registration bloat.
+   */
+  public async touchClient(clientId: string): Promise<void> {
+    const registration = await this.getClient(clientId);
+    if (registration) {
+      await this.set(this.clientKey(clientId), registration, CLIENT_REGISTRATION_TTL_SECONDS);
+    }
   }
 
   public async createTransaction(txn: Omit<PendingAuthTransaction, 'createdAt'>): Promise<string> {

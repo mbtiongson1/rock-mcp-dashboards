@@ -68,6 +68,9 @@ export async function handleAuthorizeGet(request: Request, deps: OAuthProxyDeps)
     return oauthError('invalid_client', 'Unknown client_id; register via /oauth/register first', 401);
   }
 
+  // Refresh the client registration TTL since it's actively used
+  await deps.transactionStore.touchClient(clientId);
+
   // Exact string match against the registered redirect URIs — no prefix or
   // wildcard matching (open-redirect prevention). Errors before this point
   // must NOT redirect.

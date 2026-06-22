@@ -1,16 +1,29 @@
 import { getAppContext, CreateAppContextOptions } from './app-context.js';
 import { jsonCors } from './oauth-validate.js';
 import type { Auth0OAuthMetadata } from './oauth.js';
+import { DcrRateLimiter, extractClientIp } from './dcr-rate-limiter.js';
+import { DCR_RATE_LIMIT_REQUESTS, DCR_RATE_LIMIT_WINDOW_SECONDS } from './oauth-transactions.js';
+import { createRedisClient, getRedisPrefix } from '../rock/redis.js';
 
 const MAX_REDIRECT_URIS = 10;
 
 /**
- * Validates a redirect URI according to RFC 7591 rules:
- * - Must be a valid URL
+ * Validates a redirect URI according to RFC 7591 rules with security hardening:
+ * - Must be a valid absolute URL
  * - Must use HTTPS scheme
  * - EXCEPT: HTTP is allowed for loopback hosts (localhost, 127.0.0.1, [::1])
+ * - Must NOT contain URL fragments (#)
+ * - Must NOT contain embedded credentials (user:pass@)
+ *
+ * Optional allowlist (OAUTH_REDIRECT_URI_ALLOWLIST env var, comma-separated host suffixes)
+ * can further restrict allowed hosts. When unset, all HTTPS + loopback HTTP are allowed.
  */
-export function isAllowedRedirectUri(uri: string): boolean {
+export function isAllowedRedirectUri(uri: string, allowListEnv?: string): boolean {
+  // Reject URIs with fragments before parsing URL (# without content is stripped by URL parser)
+  if (uri.includes('#')) {
+    return false;
+  }
+
   let url: URL;
   try {
     url = new URL(uri);
@@ -18,12 +31,45 @@ export function isAllowedRedirectUri(uri: string): boolean {
     return false;
   }
 
+  // Reject URIs with embedded credentials
+  if (url.username || url.password) {
+    return false;
+  }
+
+  // Check scheme and host validity
   if (url.protocol === 'https:') {
+    // Apply optional allowlist if configured
+    if (allowListEnv) {
+      return isHostAllowlisted(url.hostname, allowListEnv);
+    }
     return true;
   }
 
   if (url.protocol === 'http:') {
+    // HTTP only allowed for loopback, regardless of allowlist
     return isLoopbackHost(url.hostname);
+  }
+
+  return false;
+}
+
+/**
+ * Check if a hostname matches the allowlist (comma-separated host suffixes).
+ * Empty allowlist means allow all.
+ */
+function isHostAllowlisted(hostname: string, allowListEnv: string): boolean {
+  const trimmed = allowListEnv.trim();
+  if (!trimmed) {
+    return true; // Empty allowlist = allow all
+  }
+
+  const hosts = trimmed.split(',').map(h => h.trim().toLowerCase());
+  const lowerHostname = hostname.toLowerCase();
+
+  for (const allowedHost of hosts) {
+    if (lowerHostname === allowedHost || lowerHostname.endsWith(`.${allowedHost}`)) {
+      return true;
+    }
   }
 
   return false;
@@ -85,6 +131,28 @@ export async function handleRegisterPost(
   try {
     const app = await getAppContext(options);
 
+    // Rate limiting: check client IP against per-IP registration limit
+    const clientIp = extractClientIp(request);
+    const redis = createRedisClient();
+    const limiter = new DcrRateLimiter(
+      redis,
+      getRedisPrefix(),
+      DCR_RATE_LIMIT_REQUESTS,
+      DCR_RATE_LIMIT_WINDOW_SECONDS
+    );
+
+    const isAllowed = await limiter.checkLimit(clientIp);
+    if (!isAllowed) {
+      console.warn('[register POST] Rate limit exceeded:', { clientIp });
+      return jsonCors(
+        {
+          error: 'rate_limited',
+          error_description: `Rate limit exceeded: maximum ${DCR_RATE_LIMIT_REQUESTS} registrations per ${DCR_RATE_LIMIT_WINDOW_SECONDS / 60} minutes per IP`,
+        },
+        { status: 429 }
+      );
+    }
+
     // Parse request body
     let body: unknown;
     try {
@@ -134,13 +202,14 @@ export async function handleRegisterPost(
       );
     }
 
-    // Guard each redirect_uri
+    // Guard each redirect_uri (with optional allowlist from env var)
+    const allowList = process.env.OAUTH_REDIRECT_URI_ALLOWLIST;
     for (const uri of redirectUris) {
-      if (!isAllowedRedirectUri(uri)) {
+      if (!isAllowedRedirectUri(uri, allowList)) {
         return jsonCors(
           {
             error: 'invalid_redirect_uri',
-            error_description: 'One or more redirect_uris are invalid or disallowed (must be HTTPS, or HTTP only for loopback)',
+            error_description: 'One or more redirect_uris are invalid or disallowed (must be HTTPS, or HTTP only for loopback, no fragments or credentials)',
           },
           { status: 400 }
         );
