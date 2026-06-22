@@ -518,6 +518,82 @@ export function getLandingPageHtml(options: {
       from { transform: translateX(100%); opacity: 0; }
       to { transform: translateX(0); opacity: 1; }
     }
+
+    .github-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.85rem;
+      font-weight: 500;
+      color: var(--text-primary);
+      background-color: rgba(255, 255, 255, 0.05);
+      padding: 0.4rem 0.8rem;
+      border-radius: 9999px;
+      border: 1px solid var(--border-color);
+      text-decoration: none;
+      transition: background-color 0.2s, border-color 0.2s;
+    }
+
+    .github-link:hover {
+      background-color: rgba(255, 255, 255, 0.1);
+      border-color: var(--accent-color);
+    }
+
+    .btn-primary-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      background-color: var(--accent-color);
+      color: #ffffff;
+      padding: 0.6rem 1.2rem;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 0.95rem;
+      transition: background-color 0.2s, box-shadow 0.2s;
+      border: 1px solid transparent;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+    }
+
+    .btn-primary-link:hover {
+      background-color: var(--accent-hover);
+      box-shadow: 0 10px 15px -3px var(--accent-glow), 0 4px 6px -2px var(--accent-glow);
+    }
+
+    .info-block {
+      background-color: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 2rem;
+      box-shadow: var(--card-shadow);
+    }
+
+    .feature-list {
+      list-style-type: none;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      margin-top: 1rem;
+    }
+
+    .feature-list li {
+      font-size: 0.95rem;
+      color: var(--text-secondary);
+      position: relative;
+      padding-left: 1.5rem;
+      line-height: 1.5;
+      text-align: left;
+    }
+
+    .feature-list li::before {
+      content: "•";
+      color: var(--accent-hover);
+      font-weight: bold;
+      font-size: 1.25rem;
+      position: absolute;
+      left: 0;
+      top: -2px;
+    }
   </style>
 </head>
 <body>
@@ -527,9 +603,15 @@ export function getLandingPageHtml(options: {
         <img src="/static/icon.png" alt="Favor Church Logo" class="logo-img" onerror="this.style.display='none'">
         <span class="logo-text">Favor Church Rock MCP</span>
       </div>
-      <div class="status-indicator">
-        <span class="status-dot"></span>
-        <span>Online</span>
+      <div style="display: flex; align-items: center; gap: 1rem;">
+        <a href="https://github.com/favorchurch/rock-mcp" target="_blank" rel="noopener noreferrer" class="github-link">
+          <svg height="16" width="16" viewBox="0 0 16 16" fill="currentColor" style="vertical-align: middle;"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
+          GitHub
+        </a>
+        <div class="status-indicator">
+          <span class="status-dot"></span>
+          <span>Online</span>
+        </div>
       </div>
     </div>
   </header>
@@ -539,6 +621,13 @@ export function getLandingPageHtml(options: {
       <h1>Model Context Protocol <span>Gateway</span></h1>
       <p>Secure, low-token action-router interface for Rock RMS v17.7. Connects Claude, Cursor, and other AI clients to church operations.</p>
       
+      <div style="margin-top: 0.5rem; margin-bottom: 1rem; display: flex; justify-content: center; gap: 1rem;">
+        <a href="https://github.com/favorchurch/rock-mcp" target="_blank" rel="noopener noreferrer" class="btn-primary-link">
+          <svg height="18" width="18" viewBox="0 0 16 16" fill="currentColor" style="vertical-align: middle;"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
+          View on GitHub
+        </a>
+      </div>
+
       <div class="metadata-grid">
         <div class="metadata-item">
           <span class="metadata-label">Version:</span>
@@ -639,6 +728,38 @@ export function getLandingPageHtml(options: {
               <span class="meta-val">Enabled (Authorized)</span>
             </div>
           </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="features-security-section">
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 2rem;">
+        <!-- Key Features Column -->
+        <div class="info-block">
+          <div class="section-title">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--accent-hover)"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
+            <span>Key Features</span>
+          </div>
+          <ul class="feature-list">
+            <li><strong>OAuth 2.0 Protection:</strong> Secure, PKCE-based authorization flow with Auth0 JWT token verification via JWKS.</li>
+            <li><strong>Built-in React Report Viewer:</strong> Real-time interactive reporting directly inside Cursor/Claude using an embedded MCP Web App.</li>
+            <li><strong>Church-Tailored Tools:</strong> Deep integration with Rock RMS group types, campuses, connection requests, and serving rosters.</li>
+            <li><strong>Low-Token Action Routing:</strong> Normalizes and formats queries to minimize context window consumption on LLM calls.</li>
+          </ul>
+        </div>
+
+        <!-- Security & Safety Standards Column -->
+        <div class="info-block">
+          <div class="section-title">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--success-color)"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+            <span>Security & PII Rules</span>
+          </div>
+          <ul class="feature-list">
+            <li><strong>Fail-Closed Modes:</strong> Reverts automatically to read-only mode if permissions or user mapping fails.</li>
+            <li><strong>Dry-Run by Default:</strong> All updates default to dry-run mode and require explicit confirmation via <code>commit: true</code>.</li>
+            <li><strong>Write Auditing:</strong> Every write, patch, or delete operation requires a mandatory human-readable reason string.</li>
+            <li><strong>Privacy Filters:</strong> Automatically strips sensitive PII (emails, phone numbers, addresses) unless explicitly requested.</li>
+          </ul>
         </div>
       </div>
     </section>
