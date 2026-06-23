@@ -1,4 +1,5 @@
 import { App } from '@modelcontextprotocol/ext-apps';
+import { escapeHtml } from './escape-html.js';
 
 // Initialize the App
 const app = new App({ name: 'Rock Report Viewer', version: '1.0.0' });
@@ -168,7 +169,7 @@ function renderTable(rows: Record<string, any>[]) {
         if (currentSortColumn === col) {
           classes.push(`sort-${currentSortDir}`);
         }
-        return `<th class="${classes.join(' ')}" data-column="${col}">${col}</th>`;
+        return `<th class="${classes.join(' ')}" data-column="${escapeHtml(col)}">${escapeHtml(col)}</th>`;
       })
       .join('');
   }
@@ -187,9 +188,9 @@ function renderTable(rows: Record<string, any>[]) {
           // Highlight active statuses with badges if applicable
           if (col.toLowerCase() === 'status' || col.toLowerCase() === 'connectionstatus') {
             const isActive = displayVal.toLowerCase() === 'active' || displayVal.toLowerCase() === 'core';
-            return `<td><span class="status-badge ${isActive ? 'active' : ''}">${displayVal}</span></td>`;
+            return `<td><span class="status-badge ${isActive ? 'active' : ''}">${escapeHtml(displayVal)}</span></td>`;
           }
-          return `<td>${displayVal}</td>`;
+          return `<td>${escapeHtml(displayVal)}</td>`;
         });
         return `<tr>${cells.join('')}</tr>`;
       })
