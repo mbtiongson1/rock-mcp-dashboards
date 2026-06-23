@@ -12,6 +12,10 @@ const htmlTemplate = path.join(root, 'src/apps/report-viewer/report-viewer.html'
 const outDir = path.join(root, 'dist/apps');
 const outFile = path.join(outDir, 'report-viewer.html');
 
+/**
+ * Build the MCP App as one self-contained HTML file. Next.js traces this output
+ * into the serverless route bundle so MCP clients can load the app resource.
+ */
 async function build() {
   const result = await esbuild.build({
     entryPoints: [entryPoint],

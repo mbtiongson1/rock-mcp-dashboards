@@ -21,6 +21,11 @@ export interface RockClientConfig {
   timeoutMs?: number;
 }
 
+/**
+ * Small Rock REST client used by all tools. Authentication is delegated to a
+ * strategy so production can forward the user's bearer token while local stdio
+ * mode can use a developer API key.
+ */
 export class RockClientImpl implements RockClient {
   private baseUrl: string;
   private credentialStrategy: RockCredentialStrategy;
@@ -47,6 +52,8 @@ export class RockClientImpl implements RockClient {
     body?: unknown,
     options?: RockRequestOptions
   ): Promise<T> {
+    // Paths are stored as Rock-relative routes in tools; normalize once here
+    // so callers can pass either '/api/People' or 'api/People'.
     const urlPath = path.startsWith('/') ? path : `/${path}`;
     const url = `${this.baseUrl}${urlPath}`;
 

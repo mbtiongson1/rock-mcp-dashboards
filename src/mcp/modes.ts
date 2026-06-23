@@ -18,6 +18,11 @@ export class PersonResolutionError extends Error {
   }
 }
 
+/**
+ * Convert the requested endpoint and OAuth/Rock context into the effective MCP
+ * mode. The auto endpoint intentionally upgrades only when both the OAuth
+ * token carries `write` and Rock says the resolved person is an RSR admin.
+ */
 export function resolveMode(endpoint: EndpointKind, ctx: OAuthRockContext): McpMode {
   if (endpoint === 'readonly') {
     if (!ctx.scopes.has('read')) {

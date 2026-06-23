@@ -12,6 +12,11 @@ const __dirname = path.dirname(__filename);
 
 export const REPORT_VIEWER_URI = 'ui://rock/report-viewer.html';
 
+/**
+ * Register the bundled report-viewer HTML as an MCP App resource. The lookup
+ * order supports both compiled server builds and Next.js serverless bundles
+ * where traced files are available relative to the process working directory.
+ */
 export function registerReportViewerApp(server: McpServer) {
   registerAppResource(
     server,
