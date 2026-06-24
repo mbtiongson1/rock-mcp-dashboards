@@ -9,6 +9,14 @@ import { validateOAuthContext, jsonCors, withCors } from './oauth-validate.js';
 import { resolveServerOverride } from './server-override.js';
 import type { OAuthRockContext } from './oauth.js';
 import { AuditLogger } from '../auth/audit.js';
+import { createRedisClient, getRedisPrefix } from '../rock/redis.js';
+import {
+  RateLimiter,
+  MCP_RATE_LIMIT_SEGMENT,
+  mcpRateLimitRequests,
+  mcpRateLimitWindowSeconds,
+} from './rate-limiter.js';
+import * as crypto from 'crypto';
 
 const auditLogger = new AuditLogger();
 
@@ -38,6 +46,31 @@ export async function handleMcpPost(
   const ctx: OAuthRockContext = validation.ctx;
 
   ctx.endpoint = endpointKind;
+
+  // Per-user request rate limit. Keyed on a hash of the OAuth subject so the
+  // bucket is stable across token rotations. Fails open when Redis is not
+  // configured (local / stdio) or on any Redis error.
+  const maxRequests = mcpRateLimitRequests();
+  const windowSeconds = mcpRateLimitWindowSeconds();
+  const subjectHash = crypto.createHash('sha256').update(ctx.oauth.subject).digest('hex');
+  const rateLimiter = new RateLimiter(
+    createRedisClient(),
+    getRedisPrefix(),
+    MCP_RATE_LIMIT_SEGMENT,
+    maxRequests,
+    windowSeconds
+  );
+  const withinLimit = await rateLimiter.checkLimit(subjectHash);
+  if (!withinLimit) {
+    console.warn('[mcp POST] Rate limit exceeded:', { subjectHash });
+    return jsonCors(
+      {
+        error: 'rate_limited',
+        error_description: `Rate limit exceeded: maximum ${maxRequests} requests per ${windowSeconds} seconds`,
+      },
+      { status: 429 }
+    );
+  }
 
   let activeRockClient = app.rockClient;
   let activeUserResolver = app.rockUserResolver;

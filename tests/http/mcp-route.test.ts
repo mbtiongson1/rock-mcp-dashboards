@@ -1,6 +1,7 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import type { OAuthTokenVerifier } from '@modelcontextprotocol/sdk/server/auth/provider.js';
 import { handleMcpPost } from '../../src/http/mcp-route.js';
+import * as redisModule from '../../src/rock/redis.js';
 import { resetAppContextForTests, CreateAppContextOptions } from '../../src/http/app-context.js';
 import type { Auth0OAuthConfig, Auth0OAuthMetadata } from '../../src/http/oauth.js';
 import type { RockClient } from '../../src/rock/client.js';
@@ -252,6 +253,62 @@ describe('handleMcpPost', () => {
     );
     const response = await handleMcpPost(request, 'mcp', appOptions(verifierWithScopes(['read', 'write'])));
     expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
+  });
+
+  describe('per-user rate limiting', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+      delete process.env.ROCK_MCP_RATE_LIMIT_REQUESTS;
+      delete process.env.ROCK_MCP_RATE_LIMIT_WINDOW_SECONDS;
+    });
+
+    it('returns 429 when the per-subject limit is exceeded', async () => {
+      process.env.ROCK_MCP_RATE_LIMIT_REQUESTS = '1';
+      const mockRedis = {
+        // Second hit (value 2) exceeds the configured limit of 1.
+        incr: vi.fn().mockResolvedValue(2),
+        expire: vi.fn().mockResolvedValue(true),
+      };
+      vi.spyOn(redisModule, 'createRedisClient').mockReturnValue(mockRedis as any);
+
+      const request = mcpRequest(
+        { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} },
+        { Authorization: 'Bearer valid-token' }
+      );
+      const response = await handleMcpPost(request, 'readonly', appOptions(verifierWithScopes(['read'])));
+
+      expect(response.status).toBe(429);
+      const json = JSON.parse(await readBody(response));
+      expect(json.error).toBe('rate_limited');
+    });
+
+    it('allows the request when under the limit', async () => {
+      const mockRedis = {
+        incr: vi.fn().mockResolvedValue(1),
+        expire: vi.fn().mockResolvedValue(true),
+      };
+      vi.spyOn(redisModule, 'createRedisClient').mockReturnValue(mockRedis as any);
+
+      const request = mcpRequest(
+        { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} },
+        { Authorization: 'Bearer valid-token' }
+      );
+      const response = await handleMcpPost(request, 'readonly', appOptions(verifierWithScopes(['read'])));
+
+      expect(response.status).toBe(200);
+    });
+
+    it('fails open (allows) when Redis is not configured', async () => {
+      vi.spyOn(redisModule, 'createRedisClient').mockReturnValue(null);
+
+      const request = mcpRequest(
+        { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} },
+        { Authorization: 'Bearer valid-token' }
+      );
+      const response = await handleMcpPost(request, 'readonly', appOptions(verifierWithScopes(['read'])));
+
+      expect(response.status).toBe(200);
+    });
   });
 
   describe('Rock person requirement', () => {

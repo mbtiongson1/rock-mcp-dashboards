@@ -1,7 +1,8 @@
 import { getAppContext, CreateAppContextOptions } from './app-context.js';
 import { jsonCors } from './oauth-validate.js';
 import type { Auth0OAuthMetadata } from './oauth.js';
-import { DcrRateLimiter, extractClientIp } from './dcr-rate-limiter.js';
+import { DCR_RATE_LIMIT_SEGMENT } from './dcr-rate-limiter.js';
+import { RateLimiter, extractClientIp } from './rate-limiter.js';
 import { DCR_RATE_LIMIT_REQUESTS, DCR_RATE_LIMIT_WINDOW_SECONDS } from './oauth-transactions.js';
 import { createRedisClient, getRedisPrefix } from '../rock/redis.js';
 
@@ -138,9 +139,10 @@ export async function handleRegisterPost(
     // Rate limiting: check client IP against per-IP registration limit
     const clientIp = extractClientIp(request);
     const redis = createRedisClient();
-    const limiter = new DcrRateLimiter(
+    const limiter = new RateLimiter(
       redis,
       getRedisPrefix(),
+      DCR_RATE_LIMIT_SEGMENT,
       DCR_RATE_LIMIT_REQUESTS,
       DCR_RATE_LIMIT_WINDOW_SECONDS
     );
