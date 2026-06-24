@@ -59,13 +59,14 @@ export function proxyCallbackUrl(resourceServerUrl: URL): string {
  * registration, persists a pending transaction, and redirects to Auth0.
  */
 export async function handleAuthorizeGet(request: Request, deps: OAuthProxyDeps): Promise<Response> {
+  const requestOrigin = request.headers.get('origin') ?? undefined;
   const params = new URL(request.url).searchParams;
   const clientId = params.get('client_id') ?? '';
   const redirectUri = params.get('redirect_uri') ?? '';
 
   const registration = await deps.transactionStore.getClient(clientId);
   if (!registration) {
-    return oauthError('invalid_client', 'Unknown client_id; register via /oauth/register first', 401);
+    return oauthError('invalid_client', 'Unknown client_id; register via /oauth/register first', 401, requestOrigin);
   }
 
   // Refresh the client registration TTL since it's actively used
@@ -75,7 +76,7 @@ export async function handleAuthorizeGet(request: Request, deps: OAuthProxyDeps)
   // wildcard matching (open-redirect prevention). Errors before this point
   // must NOT redirect.
   if (!redirectUri || !registration.redirectUris.includes(redirectUri)) {
-    return oauthError('invalid_request', 'redirect_uri is not registered for this client', 400);
+    return oauthError('invalid_request', 'redirect_uri is not registered for this client', 400, requestOrigin);
   }
 
   const connectorState = params.get('state') ?? undefined;
@@ -127,12 +128,13 @@ export async function handleAuthorizeGet(request: Request, deps: OAuthProxyDeps)
  * token set under a one-time proxy code, and redirects back to the connector.
  */
 export async function handleCallbackGet(request: Request, deps: OAuthProxyDeps): Promise<Response> {
+  const requestOrigin = request.headers.get('origin') ?? undefined;
   const params = new URL(request.url).searchParams;
   const state = params.get('state') ?? '';
 
   const txn = state ? await deps.transactionStore.consumeTransaction(state) : null;
   if (!txn) {
-    return oauthError('invalid_request', 'Unknown or expired authorization transaction', 400);
+    return oauthError('invalid_request', 'Unknown or expired authorization transaction', 400, requestOrigin);
   }
 
   const connectorParams = (extra: Record<string, string>): Record<string, string> => ({
@@ -189,61 +191,62 @@ export async function handleCallbackGet(request: Request, deps: OAuthProxyDeps):
  * possession; no client secret is required of connectors).
  */
 export async function handleTokenPost(request: Request, deps: OAuthProxyDeps): Promise<Response> {
+  const requestOrigin = request.headers.get('origin') ?? undefined;
   let body: URLSearchParams;
   try {
     body = await parseTokenRequestBody(request);
   } catch {
-    return oauthError('invalid_request', 'Request body must be application/x-www-form-urlencoded or JSON', 400);
+    return oauthError('invalid_request', 'Request body must be application/x-www-form-urlencoded or JSON', 400, requestOrigin);
   }
 
   const grantType = body.get('grant_type');
   if (grantType === 'authorization_code') {
-    return handleAuthorizationCodeGrant(body, deps);
+    return handleAuthorizationCodeGrant(body, deps, requestOrigin);
   }
   if (grantType === 'refresh_token') {
-    return handleRefreshTokenGrant(body, deps);
+    return handleRefreshTokenGrant(body, deps, requestOrigin);
   }
-  return oauthError('unsupported_grant_type', 'grant_type must be authorization_code or refresh_token', 400);
+  return oauthError('unsupported_grant_type', 'grant_type must be authorization_code or refresh_token', 400, requestOrigin);
 }
 
-async function handleAuthorizationCodeGrant(body: URLSearchParams, deps: OAuthProxyDeps): Promise<Response> {
+async function handleAuthorizationCodeGrant(body: URLSearchParams, deps: OAuthProxyDeps, requestOrigin?: string): Promise<Response> {
   const code = body.get('code') ?? '';
   const codeVerifier = body.get('code_verifier') ?? '';
   const clientId = body.get('client_id') ?? '';
   const redirectUri = body.get('redirect_uri');
 
   if (!code || !codeVerifier || !clientId) {
-    return oauthError('invalid_request', 'code, code_verifier and client_id are required', 400);
+    return oauthError('invalid_request', 'code, code_verifier and client_id are required', 400, requestOrigin);
   }
 
   // One-time consume: replayed or expired codes fail closed.
   const record = await deps.transactionStore.consumeProxyCode(code);
   if (!record) {
-    return oauthError('invalid_grant', 'Authorization code is invalid, expired, or already used', 400);
+    return oauthError('invalid_grant', 'Authorization code is invalid, expired, or already used', 400, requestOrigin);
   }
   if (record.clientId !== clientId) {
-    return oauthError('invalid_grant', 'Authorization code was issued to a different client', 400);
+    return oauthError('invalid_grant', 'Authorization code was issued to a different client', 400, requestOrigin);
   }
   if (redirectUri !== null && redirectUri !== record.redirectUri) {
-    return oauthError('invalid_grant', 'redirect_uri does not match the authorization request', 400);
+    return oauthError('invalid_grant', 'redirect_uri does not match the authorization request', 400, requestOrigin);
   }
   if (!verifyPkceS256(codeVerifier, record.codeChallenge)) {
-    return oauthError('invalid_grant', 'PKCE verification failed', 400);
+    return oauthError('invalid_grant', 'PKCE verification failed', 400, requestOrigin);
   }
 
-  return jsonCors(record.tokenResponse, { status: 200, headers: NO_STORE_HEADERS });
+  return jsonCors(record.tokenResponse, { status: 200, headers: NO_STORE_HEADERS }, requestOrigin);
 }
 
-async function handleRefreshTokenGrant(body: URLSearchParams, deps: OAuthProxyDeps): Promise<Response> {
+async function handleRefreshTokenGrant(body: URLSearchParams, deps: OAuthProxyDeps, requestOrigin?: string): Promise<Response> {
   const refreshToken = body.get('refresh_token') ?? '';
   const clientId = body.get('client_id') ?? '';
 
   if (!refreshToken) {
-    return oauthError('invalid_request', 'refresh_token is required', 400);
+    return oauthError('invalid_request', 'refresh_token is required', 400, requestOrigin);
   }
   const registration = await deps.transactionStore.getClient(clientId);
   if (!registration) {
-    return oauthError('invalid_client', 'Unknown client_id', 401);
+    return oauthError('invalid_client', 'Unknown client_id', 401, requestOrigin);
   }
 
   try {
@@ -258,17 +261,17 @@ async function handleRefreshTokenGrant(body: URLSearchParams, deps: OAuthProxyDe
     // issued — Auth0 is authoritative for rotation and reuse detection, so we
     // keep no local refresh-token state. (Reuse of a rotated/revoked token
     // surfaces as an Auth0 `invalid_grant`, relayed below.)
-    return jsonCors(tokenResponse, { status: 200, headers: NO_STORE_HEADERS });
+    return jsonCors(tokenResponse, { status: 200, headers: NO_STORE_HEADERS }, requestOrigin);
   } catch (err) {
     if (err instanceof Auth0TokenError) {
       // Pass Auth0's OAuth error through (e.g. invalid_grant on revoked or
       // already-rotated/reused refresh tokens).
-      return jsonCors(err.body, { status: err.status, headers: NO_STORE_HEADERS });
+      return jsonCors(err.body, { status: err.status, headers: NO_STORE_HEADERS }, requestOrigin);
     }
     console.error('[oauth token] Auth0 refresh failed:', {
       error: err instanceof Error ? err.message : String(err),
     });
-    return oauthError('server_error', 'Token refresh with the upstream identity provider failed', 502);
+    return oauthError('server_error', 'Token refresh with the upstream identity provider failed', 502, requestOrigin);
   }
 }
 
@@ -455,8 +458,8 @@ function redirectWithParams(baseUri: string, params: Record<string, string>): Re
   return Response.redirect(url.toString(), 302);
 }
 
-function oauthError(error: string, description: string, status: number): Response {
-  return jsonCors({ error, error_description: description }, { status, headers: NO_STORE_HEADERS });
+function oauthError(error: string, description: string, status: number, requestOrigin?: string): Response {
+  return jsonCors({ error, error_description: description }, { status, headers: NO_STORE_HEADERS }, requestOrigin);
 }
 
 const NO_STORE_HEADERS: Record<string, string> = {

@@ -6,6 +6,28 @@ export interface RockRequestOptions {
   headers?: Record<string, string>;
 }
 
+/**
+ * Error thrown for a non-OK Rock REST response.
+ *
+ * `.message` is intentionally GENERIC (status + statusText only) because it may
+ * propagate to MCP clients via the HTTP catch blocks. The raw upstream response
+ * body is preserved on `.bodyText` for server-side logging only and must never
+ * be echoed back to clients.
+ */
+export class RockApiError extends Error {
+  public readonly status: number;
+  public readonly statusText: string;
+  public readonly bodyText: string;
+
+  constructor(status: number, statusText: string, bodyText: string) {
+    super(`Rock API error (${status} ${statusText})`);
+    this.name = 'RockApiError';
+    this.status = status;
+    this.statusText = statusText;
+    this.bodyText = bodyText;
+  }
+}
+
 export interface RockClient {
   readonly baseUrl?: string;
   get<T>(ctx: OAuthRockContext, path: string, options?: RockRequestOptions): Promise<T>;
@@ -88,7 +110,16 @@ export class RockClientImpl implements RockClient {
 
       if (!response.ok) {
         const errorText = await response.text().catch(() => response.statusText);
-        throw new Error(`Rock API error (${response.status} ${response.statusText}): ${errorText}`);
+        // Log the full upstream body server-side only; the thrown error's
+        // message stays generic so it is safe to surface to clients.
+        console.error('[rock client] Rock API error response:', {
+          status: response.status,
+          statusText: response.statusText,
+          method,
+          path,
+          bodyText: errorText,
+        });
+        throw new RockApiError(response.status, response.statusText, errorText);
       }
 
       // Check content-type to see if it's JSON

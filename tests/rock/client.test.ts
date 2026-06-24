@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 // @ts-ignore
-import { RockClientImpl } from '../../src/rock/client.js';
+import { RockClientImpl, RockApiError } from '../../src/rock/client.js';
 // @ts-ignore
 import { OAuthRockContext } from '../../src/http/oauth.js';
 
@@ -47,17 +47,33 @@ describe('RockClient', () => {
     expect(result.Id).toBe(123);
   });
 
-  it('should normalize HTTP errors into readable Rock errors', async () => {
+  it('throws a RockApiError whose message omits the upstream body text', async () => {
+    const SENSITIVE_BODY = 'Detailed error message from Rock with secrets';
     const mockResponse = {
       ok: false,
       status: 400,
       statusText: 'Bad Request',
-      text: async () => 'Detailed error message from Rock',
+      text: async () => SENSITIVE_BODY,
     };
     vi.mocked(fetch).mockResolvedValue(mockResponse as any);
 
-    await expect(client.get(mockCtx, '/api/v2/models/people/999')).rejects.toThrow(
-      'Rock API error (400 Bad Request): Detailed error message from Rock'
-    );
+    let caught: unknown;
+    try {
+      await client.get(mockCtx, '/api/v2/models/people/999');
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(RockApiError);
+    const rockErr = caught as RockApiError;
+
+    // The generic message must NOT leak the raw upstream body.
+    expect(rockErr.message).toBe('Rock API error (400 Bad Request)');
+    expect(rockErr.message).not.toContain(SENSITIVE_BODY);
+
+    // The body is preserved on the instance for server-side logging only.
+    expect(rockErr.bodyText).toBe(SENSITIVE_BODY);
+    expect(rockErr.status).toBe(400);
+    expect(rockErr.statusText).toBe('Bad Request');
   });
 });

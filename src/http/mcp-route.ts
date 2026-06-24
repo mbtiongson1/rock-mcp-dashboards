@@ -8,6 +8,7 @@ import { getAppContext, CreateAppContextOptions } from './app-context.js';
 import { validateOAuthContext, jsonCors, withCors } from './oauth-validate.js';
 import { resolveServerOverride } from './server-override.js';
 import type { OAuthRockContext } from './oauth.js';
+import { RockApiError } from '../rock/client.js';
 import { AuditLogger } from '../auth/audit.js';
 import { createRedisClient, getRedisPrefix } from '../rock/redis.js';
 import {
@@ -34,6 +35,7 @@ export async function handleMcpPost(
   options?: CreateAppContextOptions
 ): Promise<Response> {
   const app = await getAppContext(options);
+  const requestOrigin = request.headers.get('origin') ?? undefined;
 
   const validation = await validateOAuthContext(request, {
     verifier: app.verifier,
@@ -83,7 +85,7 @@ export async function handleMcpPost(
   if (serverParam) {
     const override = resolveServerOverride(serverParam, app.rockBaseUrl, process.env.ROCK_ALLOWED_SERVERS);
     if (!override.ok) {
-      return jsonCors({ error: override.error }, { status: 400 });
+      return jsonCors({ error: override.error }, { status: 400 }, requestOrigin);
     }
     activeRockClient = app.rockClientForBase(override.baseUrl);
     activeUserResolver = app.rockUserResolverForBase(override.baseUrl);
@@ -139,7 +141,7 @@ export async function handleMcpPost(
 
     await server.connect(transport);
     const response = await transport.handleRequest(request);
-    return withCors(response);
+    return withCors(response, requestOrigin);
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Internal server error';
     if (err instanceof PersonResolutionError) {
@@ -150,11 +152,21 @@ export async function handleMcpPost(
         errorCode: 'PERSON_NOT_RESOLVED',
         reason: `Person not resolved for email: ${err.email || 'unknown'}`,
       });
-      return jsonCors({ error: message }, { status: 403 });
+      return jsonCors({ error: message }, { status: 403 }, requestOrigin);
     }
     if (err instanceof ScopeError) {
-      return jsonCors({ error: message }, { status: 403 });
+      return jsonCors({ error: message }, { status: 403 }, requestOrigin);
     }
-    return jsonCors({ error: message }, { status: 500 });
+    // `message` for a RockApiError is already generic (status + statusText
+    // only); the full upstream body is logged inside the Rock client and is
+    // never attached here, so it cannot leak to the client.
+    if (err instanceof RockApiError) {
+      console.error('[mcp route] Rock API error surfaced to client:', {
+        status: err.status,
+        statusText: err.statusText,
+      });
+      return jsonCors({ error: err.message }, { status: 502 }, requestOrigin);
+    }
+    return jsonCors({ error: message }, { status: 500 }, requestOrigin);
   }
 }

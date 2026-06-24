@@ -74,6 +74,48 @@ describe('DcrRateLimiter', () => {
       expect(result).toBe(true); // fails open
     });
 
+    it('should fail open by default (failClosed omitted) when Redis is null', async () => {
+      const limiter = new DcrRateLimiter(null, 'test:', 10, 3600);
+
+      const result = await limiter.checkLimit('192.168.1.1');
+
+      expect(result).toBe(true);
+    });
+
+    it('should fail closed (deny) when failClosed=true and Redis is null', async () => {
+      const limiter = new DcrRateLimiter(null, 'test:', 10, 3600, true);
+
+      const result = await limiter.checkLimit('192.168.1.1');
+
+      expect(result).toBe(false);
+    });
+
+    it('should fail closed (deny) when failClosed=true and Redis throws', async () => {
+      const mockRedis = {
+        incr: vi.fn().mockRejectedValue(new Error('Redis connection failed')),
+        expire: vi.fn().mockResolvedValue(true),
+      };
+
+      const limiter = new DcrRateLimiter(mockRedis as any, 'test:', 10, 3600, true);
+
+      const result = await limiter.checkLimit('192.168.1.1');
+
+      expect(result).toBe(false);
+    });
+
+    it('should still allow normal requests when failClosed=true and Redis is healthy', async () => {
+      const mockRedis = {
+        incr: vi.fn().mockResolvedValue(1),
+        expire: vi.fn().mockResolvedValue(true),
+      };
+
+      const limiter = new DcrRateLimiter(mockRedis as any, 'test:', 10, 3600, true);
+
+      const result = await limiter.checkLimit('192.168.1.1');
+
+      expect(result).toBe(true);
+    });
+
     it('should track different IPs independently', async () => {
       const mockRedis = {
         incr: vi.fn()

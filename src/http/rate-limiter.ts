@@ -9,8 +9,12 @@ import type { Redis } from '@upstash/redis';
  * - `segment` identifies the limiter (e.g. `dcr:ratelimit:`, `mcp:ratelimit:`)
  * - `key` is the per-caller bucket (an IP, a hashed subject, etc.)
  *
- * If Redis is not configured (null), rate limiting is skipped (fail-open for
- * local dev / stdio). On any Redis error, the limiter also fails open.
+ * If Redis is not configured (null) or a Redis call errors, behavior depends on
+ * `failClosed`:
+ * - `failClosed === false` (default): rate limiting is skipped/allowed
+ *   (fail-open) — appropriate for local dev / stdio where Redis is often absent.
+ * - `failClosed === true`: requests are denied (fail-closed) — used in
+ *   production so a Redis outage cannot silently disable rate limiting.
  */
 export class RateLimiter {
   constructor(
@@ -18,17 +22,22 @@ export class RateLimiter {
     private prefix: string,
     private segment: string,
     private maxRequests: number,
-    private windowSeconds: number
+    private windowSeconds: number,
+    private failClosed: boolean = false
   ) {}
 
   /**
    * Check if the given key is within the rate limit.
    * Returns true if allowed, false if rate limited.
-   * On Redis errors or when Redis is unconfigured, returns true (fail-open).
+   * When Redis is unconfigured or errors, returns `!failClosed`.
    */
   public async checkLimit(key: string): Promise<boolean> {
     if (!this.redis) {
-      // No Redis configured; skip rate limiting (fail-open for local dev)
+      // No Redis configured; fail open in dev, fail closed (deny) in prod.
+      if (this.failClosed) {
+        console.warn('[RateLimiter] Redis unavailable; failing closed (denying request)');
+        return false;
+      }
       return true;
     }
 
@@ -43,8 +52,14 @@ export class RateLimiter {
       }
 
       return current <= this.maxRequests;
-    } catch {
-      // On any Redis error, fail open (allow the request)
+    } catch (err) {
+      // On any Redis error, fail open in dev or fail closed (deny) in prod.
+      if (this.failClosed) {
+        console.error('[RateLimiter] Redis error; failing closed (denying request):', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return false;
+      }
       return true;
     }
   }

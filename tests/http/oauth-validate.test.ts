@@ -1,7 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import type { OAuthTokenVerifier } from '@modelcontextprotocol/sdk/server/auth/provider.js';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
-import { validateOAuthContext } from '../../src/http/oauth-validate.js';
+import { validateOAuthContext, jsonCors } from '../../src/http/oauth-validate.js';
 
 const RESOURCE_METADATA_URL = 'https://mcp.example.com/.well-known/oauth-protected-resource';
 
@@ -115,5 +115,43 @@ describe('validateOAuthContext', () => {
 
     expect(result.response!.status).toBe(401);
     expect(result.response!.headers.get('WWW-Authenticate')).toContain('error="invalid_token"');
+  });
+});
+
+describe('jsonCors CORS allowlist', () => {
+  afterEach(() => {
+    delete process.env.OAUTH_ALLOWED_ORIGINS;
+  });
+
+  it('uses permissive * and no Vary when OAUTH_ALLOWED_ORIGINS is unset', () => {
+    delete process.env.OAUTH_ALLOWED_ORIGINS;
+    const res = jsonCors({ ok: true }, {}, 'https://evil.example.com');
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
+    expect(res.headers.get('Vary')).toBeNull();
+  });
+
+  it('reflects a matching Origin and sets Vary: Origin when allowlist is set', () => {
+    process.env.OAUTH_ALLOWED_ORIGINS = 'https://app.example.com, https://other.example.com';
+    const res = jsonCors({ ok: true }, {}, 'https://app.example.com');
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe('https://app.example.com');
+    expect(res.headers.get('Vary')).toBe('Origin');
+  });
+
+  it('does not reflect a non-matching Origin when allowlist is set', () => {
+    process.env.OAUTH_ALLOWED_ORIGINS = 'https://app.example.com';
+    const res = jsonCors({ ok: true }, {}, 'https://evil.example.com');
+    const acao = res.headers.get('Access-Control-Allow-Origin');
+    expect(acao).not.toBe('https://evil.example.com');
+    expect(acao).not.toBe('*');
+    // Falls back to the first allowlisted origin, never reflecting attacker origin.
+    expect(acao).toBe('https://app.example.com');
+    expect(res.headers.get('Vary')).toBe('Origin');
+  });
+
+  it('does not reflect when no Origin header is present and allowlist is set', () => {
+    process.env.OAUTH_ALLOWED_ORIGINS = 'https://app.example.com';
+    const res = jsonCors({ ok: true });
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe('https://app.example.com');
+    expect(res.headers.get('Access-Control-Allow-Origin')).not.toBe('*');
   });
 });
