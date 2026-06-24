@@ -4,6 +4,7 @@ import {
   handleAuthorizeGet,
   handleCallbackGet,
   handleTokenPost,
+  handleRevokePost,
   loadOAuthProxyClientConfig,
   proxyCallbackUrl,
   verifyPkceS256,
@@ -23,6 +24,7 @@ const oauthMetadata: Auth0OAuthMetadata = {
   issuer: 'https://auth.example.com/',
   authorization_endpoint: 'https://auth.example.com/authorize',
   token_endpoint: 'https://auth.example.com/oauth/token',
+  revocation_endpoint: 'https://auth.example.com/oauth/revoke',
   jwks_uri: 'https://auth.example.com/.well-known/jwks.json',
   response_types_supported: ['code'],
   token_endpoint_auth_methods_supported: ['none'],
@@ -69,6 +71,14 @@ function authorizeRequest(params: Record<string, string>): Request {
 
 function tokenRequest(params: Record<string, string>): Request {
   return new Request('https://mcp.example.com/oauth/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(params).toString(),
+  });
+}
+
+function revokeRequest(params: Record<string, string>): Request {
+  return new Request('https://mcp.example.com/oauth/revoke', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams(params).toString(),
@@ -379,6 +389,32 @@ describe('handleTokenPost refresh_token grant', () => {
     expect(sentBody.get('client_secret')).toBe('proxy-client-secret');
   });
 
+  it('passes a rotated refresh_token from Auth0 through to the connector', async () => {
+    const rotated = {
+      access_token: 'new-access-token',
+      refresh_token: 'rotated-refresh-token',
+      token_type: 'Bearer',
+      expires_in: 86400,
+      scope: 'read write',
+    };
+    const deps = makeDeps({
+      fetchFn: vi.fn(async () => new Response(JSON.stringify(rotated), { status: 200 })) as unknown as typeof fetch,
+    });
+    const connector = await registerConnector(deps.store);
+
+    const response = await handleTokenPost(tokenRequest({
+      grant_type: 'refresh_token',
+      refresh_token: 'auth0-refresh-token',
+      client_id: connector.clientId,
+    }), deps);
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Record<string, unknown>;
+    // Auth0 is authoritative for rotation: the new refresh_token is passed through verbatim.
+    expect(body.refresh_token).toBe('rotated-refresh-token');
+    expect(body.access_token).toBe('new-access-token');
+  });
+
   it('passes Auth0 invalid_grant errors through', async () => {
     const deps = makeDeps({
       fetchFn: vi.fn(async () => new Response(
@@ -419,5 +455,117 @@ describe('handleTokenPost refresh_token grant', () => {
     expect(response.status).toBe(400);
     const body = (await response.json()) as Record<string, unknown>;
     expect(body.error).toBe('unsupported_grant_type');
+  });
+});
+
+describe('handleRevokePost', () => {
+  it('forwards the revocation to Auth0 and returns 200 (RFC 7009)', async () => {
+    const deps = makeDeps({
+      fetchFn: vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch,
+    });
+    const connector = await registerConnector(deps.store);
+
+    const response = await handleRevokePost(revokeRequest({
+      token: 'auth0-refresh-token',
+      token_type_hint: 'refresh_token',
+      client_id: connector.clientId,
+    }), deps);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+
+    const fetchMock = deps.fetchFn as ReturnType<typeof vi.fn>;
+    const [revokeUrl, init] = fetchMock.mock.calls[0];
+    expect(revokeUrl).toBe('https://auth.example.com/oauth/revoke');
+    const sentBody = new URLSearchParams(init.body as string);
+    expect(sentBody.get('token')).toBe('auth0-refresh-token');
+    expect(sentBody.get('token_type_hint')).toBe('refresh_token');
+    // Forwarded with the proxy's confidential client credentials.
+    expect(sentBody.get('client_id')).toBe('proxy-client-id');
+    expect(sentBody.get('client_secret')).toBe('proxy-client-secret');
+  });
+
+  it('returns 200 even for an unknown token (no probing)', async () => {
+    // Auth0 returns 200 for unknown tokens per RFC 7009.
+    const deps = makeDeps({
+      fetchFn: vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch,
+    });
+    const connector = await registerConnector(deps.store);
+
+    const response = await handleRevokePost(revokeRequest({
+      token: 'unknown-token',
+      client_id: connector.clientId,
+    }), deps);
+
+    expect(response.status).toBe(200);
+  });
+
+  it('rejects an unknown client_id with invalid_client', async () => {
+    const deps = makeDeps({
+      fetchFn: vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch,
+    });
+
+    const response = await handleRevokePost(revokeRequest({
+      token: 'auth0-refresh-token',
+      client_id: 'mcp_unknown',
+    }), deps);
+
+    expect(response.status).toBe(401);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.error).toBe('invalid_client');
+    // Must not have called Auth0 for an unauthenticated client.
+    expect((deps.fetchFn as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
+  });
+
+  it('requires a token', async () => {
+    const deps = makeDeps();
+    const connector = await registerConnector(deps.store);
+
+    const response = await handleRevokePost(revokeRequest({
+      client_id: connector.clientId,
+    }), deps);
+
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.error).toBe('invalid_request');
+  });
+
+  it('falls back to {issuer}/oauth/revoke when metadata omits revocation_endpoint', async () => {
+    const metadataWithoutRevoke = { ...oauthMetadata };
+    delete (metadataWithoutRevoke as Record<string, unknown>).revocation_endpoint;
+    const deps = makeDeps({
+      oauthMetadata: metadataWithoutRevoke,
+      fetchFn: vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch,
+    });
+    const connector = await registerConnector(deps.store);
+
+    const response = await handleRevokePost(revokeRequest({
+      token: 'auth0-refresh-token',
+      client_id: connector.clientId,
+    }), deps);
+
+    expect(response.status).toBe(200);
+    const fetchMock = deps.fetchFn as ReturnType<typeof vi.fn>;
+    expect(fetchMock.mock.calls[0][0]).toBe('https://auth.example.com/oauth/revoke');
+  });
+
+  it('relays an Auth0 error body without leaking secrets', async () => {
+    const deps = makeDeps({
+      fetchFn: vi.fn(async () => new Response(
+        JSON.stringify({ error: 'unsupported_token_type' }),
+        { status: 400 }
+      )) as unknown as typeof fetch,
+    });
+    const connector = await registerConnector(deps.store);
+
+    const response = await handleRevokePost(revokeRequest({
+      token: 'auth0-refresh-token',
+      client_id: connector.clientId,
+    }), deps);
+
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.error).toBe('unsupported_token_type');
+    expect(JSON.stringify(body)).not.toContain('proxy-client-secret');
   });
 });

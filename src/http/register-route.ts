@@ -109,6 +109,10 @@ export function localizeOAuthMetadata(
     authorization_endpoint: `${base}/oauth/authorize`,
     token_endpoint: `${base}/oauth/token`,
     registration_endpoint: `${base}/oauth/register`,
+    // Token revocation (RFC 7009) is proxied through this server to Auth0; see
+    // handleRevokePost in oauth-proxy.ts. Auth0 remains authoritative for the
+    // actual revocation.
+    revocation_endpoint: `${base}/oauth/revoke`,
     response_types_supported: ['code'],
     grant_types_supported: ['authorization_code', 'refresh_token'],
     token_endpoint_auth_methods_supported: ['none'],

@@ -251,16 +251,135 @@ async function handleRefreshTokenGrant(body: URLSearchParams, deps: OAuthProxyDe
       grant_type: 'refresh_token',
       refresh_token: refreshToken,
     });
+    // Refresh-token rotation is handled entirely by Auth0: when rotation is
+    // enabled on the Auth0 client, the response carries a NEW `refresh_token`
+    // and the presented one is invalidated upstream. We pass the response
+    // through verbatim so the connector receives whatever rotated token Auth0
+    // issued — Auth0 is authoritative for rotation and reuse detection, so we
+    // keep no local refresh-token state. (Reuse of a rotated/revoked token
+    // surfaces as an Auth0 `invalid_grant`, relayed below.)
     return jsonCors(tokenResponse, { status: 200, headers: NO_STORE_HEADERS });
   } catch (err) {
     if (err instanceof Auth0TokenError) {
-      // Pass Auth0's OAuth error through (e.g. invalid_grant on revoked tokens).
+      // Pass Auth0's OAuth error through (e.g. invalid_grant on revoked or
+      // already-rotated/reused refresh tokens).
       return jsonCors(err.body, { status: err.status, headers: NO_STORE_HEADERS });
     }
     console.error('[oauth token] Auth0 refresh failed:', {
       error: err instanceof Error ? err.message : String(err),
     });
     return oauthError('server_error', 'Token refresh with the upstream identity provider failed', 502);
+  }
+}
+
+/**
+ * POST /oauth/revoke — RFC 7009 token revocation, proxied to Auth0.
+ *
+ * The connector is a public client, so we authenticate the request by matching
+ * its `client_id` against the stored registration (exactly like the refresh
+ * grant), then forward the revocation to Auth0's revocation endpoint using THIS
+ * proxy's confidential client credentials. Auth0 is authoritative for actually
+ * revoking the token.
+ *
+ * Per RFC 7009 §2.2 the endpoint returns HTTP 200 with an empty body on
+ * success, and also for tokens that are unknown/already-invalid — clients must
+ * not be able to probe token validity here. We only deviate from 200 for an
+ * unauthenticated client (invalid_client) or a malformed request.
+ */
+export async function handleRevokePost(request: Request, deps: OAuthProxyDeps): Promise<Response> {
+  let body: URLSearchParams;
+  try {
+    body = await parseTokenRequestBody(request);
+  } catch {
+    return oauthError('invalid_request', 'Request body must be application/x-www-form-urlencoded or JSON', 400);
+  }
+
+  const token = body.get('token') ?? '';
+  const clientId = body.get('client_id') ?? '';
+  if (!token) {
+    return oauthError('invalid_request', 'token is required', 400);
+  }
+
+  const registration = await deps.transactionStore.getClient(clientId);
+  if (!registration) {
+    return oauthError('invalid_client', 'Unknown client_id', 401);
+  }
+
+  const tokenTypeHint = body.get('token_type_hint') ?? undefined;
+  try {
+    await revokeWithAuth0(deps, token, tokenTypeHint);
+  } catch (err) {
+    if (err instanceof Auth0TokenError) {
+      // Auth0 returns 200 for unknown tokens, so a non-OK status here is a real
+      // error (e.g. unsupported_token_type). Relay Auth0's OAuth error body,
+      // which never contains our client secret.
+      return jsonCors(err.body, { status: err.status, headers: NO_STORE_HEADERS });
+    }
+    // Network/transport failure — log without leaking the token or secrets.
+    console.error('[oauth revoke] Auth0 revocation failed:', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return oauthError('server_error', 'Token revocation with the upstream identity provider failed', 502);
+  }
+
+  // RFC 7009 success: 200 with an empty body and no-store headers.
+  return new Response(null, { status: 200, headers: { ...NO_STORE_HEADERS } });
+}
+
+/**
+ * Resolves Auth0's RFC 7009 revocation endpoint. Prefer the discovery
+ * metadata's `revocation_endpoint`, but ONLY when it lives on the same origin
+ * as the configured (trusted) issuer; otherwise fall back to Auth0's standard
+ * `{issuer}/oauth/revoke`.
+ *
+ * The same-origin guard is a real safeguard, not just taint-laundering: the
+ * revocation request carries this proxy's confidential `client_secret`, so a
+ * tampered or unexpected discovery document must never be able to redirect that
+ * request to an arbitrary host (server-side request forgery / secret exfil —
+ * js/request-forgery). Constraining the host to the issuer's origin closes that.
+ */
+function auth0RevocationEndpoint(deps: OAuthProxyDeps): string {
+  const issuer = deps.oauthConfig.issuer.replace(/\/$/, '');
+  const fallback = `${issuer}/oauth/revoke`;
+  const fromMetadata = deps.oauthMetadata.revocation_endpoint;
+  if (typeof fromMetadata === 'string' && fromMetadata.length > 0) {
+    try {
+      const candidate = new URL(fromMetadata);
+      const issuerOrigin = new URL(issuer).origin;
+      if (candidate.origin === issuerOrigin) {
+        return `${issuerOrigin}${candidate.pathname}${candidate.search}`;
+      }
+    } catch {
+      // Malformed metadata URL — fall through to the issuer-derived endpoint.
+    }
+  }
+  return fallback;
+}
+
+async function revokeWithAuth0(deps: OAuthProxyDeps, token: string, tokenTypeHint?: string): Promise<void> {
+  const fetchFn = deps.fetchFn ?? fetch;
+  const params: Record<string, string> = {
+    token,
+    client_id: deps.proxyClient.clientId,
+    client_secret: deps.proxyClient.clientSecret,
+  };
+  if (tokenTypeHint) {
+    params.token_type_hint = tokenTypeHint;
+  }
+  const response = await fetchFn(auth0RevocationEndpoint(deps), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(params).toString(),
+  });
+
+  if (!response.ok) {
+    let payload: Record<string, unknown>;
+    try {
+      payload = await response.json() as Record<string, unknown>;
+    } catch {
+      payload = { error: 'server_error', error_description: 'Upstream revocation endpoint returned a non-JSON response' };
+    }
+    throw new Auth0TokenError(response.status, payload);
   }
 }
 
