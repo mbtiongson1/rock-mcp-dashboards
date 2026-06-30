@@ -75,8 +75,8 @@ describe('RateLimiter', () => {
 
 describe('mcp rate-limit env helpers', () => {
   it('returns defaults when env is unset', () => {
-    expect(mcpRateLimitRequests({})).toBe(MCP_RATE_LIMIT_REQUESTS_DEFAULT);
-    expect(mcpRateLimitWindowSeconds({})).toBe(MCP_RATE_LIMIT_WINDOW_SECONDS_DEFAULT);
+    expect(mcpRateLimitRequests({} as any)).toBe(MCP_RATE_LIMIT_REQUESTS_DEFAULT);
+    expect(mcpRateLimitWindowSeconds({} as any)).toBe(MCP_RATE_LIMIT_WINDOW_SECONDS_DEFAULT);
   });
 
   it('reads valid positive integers from env', () => {

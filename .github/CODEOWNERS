@@ -1,0 +1,17 @@
+# Code owners for rock-mcp.
+#
+# Owners are automatically requested for review on PRs that touch matching
+# paths. To make this a hard gate, enable "Require review from Code Owners"
+# in the branch protection rules for `main`.
+
+# Default owners for everything in the repo.
+*                     @rico-favor @ricofavor
+
+# Security-sensitive surfaces — changes here warrant extra scrutiny:
+#   - CI/CD (can exfiltrate secrets / alter the build)
+#   - authn/authz (login gate, admin/staff roles, write authorization)
+#   - the HTTP / OAuth proxy layer
+/.github/             @rico-favor @ricofavor
+/src/auth/            @rico-favor @ricofavor
+/src/http/            @rico-favor @ricofavor
+/src/mcp/modes.ts     @rico-favor @ricofavor

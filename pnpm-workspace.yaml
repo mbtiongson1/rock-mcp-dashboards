@@ -2,3 +2,8 @@ allowBuilds:
   esbuild: true
   "@modelcontextprotocol/ext-apps": true
   sharp: false
+
+# Force-patch the transitive postcss XSS advisory (GHSA-qx2v-qp2m-jg93):
+# next pulls postcss 8.4.31; pin any <8.5.10 up to the patched line.
+overrides:
+  postcss@<8.5.10: ">=8.5.10"
