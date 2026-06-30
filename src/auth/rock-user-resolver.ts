@@ -8,7 +8,14 @@ export interface ResolvedRockUser {
   personAliasId?: number;
   userLoginId?: number;
   userName?: string;
+  /** Member of the `RSR - Rock Administration` security role. */
   isRsrAdmin: boolean;
+  /**
+   * Member of a Rock staff security role (see {@link RockUserResolver} —
+   * `RSR - Staff Workers` / `RSR - Staff Like Workers` by default, overridable
+   * via `ROCK_STAFF_ROLE_NAMES`). Admins are treated as staff too.
+   */
+  isStaff: boolean;
 }
 
 interface CacheEntry<T> {
@@ -18,7 +25,26 @@ interface CacheEntry<T> {
 
 export class RockUserResolver {
   private static RSR_ROLE_NAME = 'RSR - Rock Administration';
+  /**
+   * Default staff security roles. Membership in ANY of these (via the user's
+   * own forwarded token) grants read access. Override the set with the
+   * comma-separated `ROCK_STAFF_ROLE_NAMES` env var.
+   */
+  private static DEFAULT_STAFF_ROLE_NAMES = ['RSR - Staff Workers', 'RSR - Staff Like Workers'];
   private cache = new Map<string, CacheEntry<any>>();
+
+  /** Resolve the configured staff role names (env override or defaults). */
+  private staffRoleNames(): string[] {
+    const raw = process.env.ROCK_STAFF_ROLE_NAMES?.trim();
+    if (!raw) {
+      return RockUserResolver.DEFAULT_STAFF_ROLE_NAMES;
+    }
+    const names = raw
+      .split(',')
+      .map((name) => name.trim())
+      .filter(Boolean);
+    return names.length > 0 ? names : RockUserResolver.DEFAULT_STAFF_ROLE_NAMES;
+  }
 
   constructor(private rockClient: RockClient) {}
 
@@ -92,6 +118,7 @@ export class RockUserResolver {
 
     const resolved: ResolvedRockUser = {
       isRsrAdmin: false,
+      isStaff: false,
     };
 
     if (person) {
@@ -100,6 +127,9 @@ export class RockUserResolver {
       resolved.personAliasId = person.PrimaryAliasId || person.Id;
 
       resolved.isRsrAdmin = await this.checkRsrAdmin(ctx, person.Id);
+      // Admins are a privilege superset of staff, so skip the extra staff
+      // lookups for them and treat them as staff.
+      resolved.isStaff = resolved.isRsrAdmin ? true : await this.checkStaff(ctx, person.Id);
     }
 
     // Cache user resolution for 15 minutes
@@ -114,29 +144,35 @@ export class RockUserResolver {
    * treated as non-admin, which is the safe default.
    */
   private async checkRsrAdmin(ctx: OAuthRockContext, personId: number): Promise<boolean> {
-    const lookupClient = this.rockClient;
-    const cacheKey = `rsr-membership:${personId}`;
-    const cached = this.getCached<boolean>(cacheKey);
+    return this.isActiveRoleMember(ctx, personId, RockUserResolver.RSR_ROLE_NAME);
+  }
+
+  /**
+   * Checks staff membership: true if the person is an active member of ANY
+   * configured staff role. Uses the user's own forwarded token and fails closed
+   * (false) on any denied/failed lookup, exactly like the admin check.
+   */
+  private async checkStaff(ctx: OAuthRockContext, personId: number): Promise<boolean> {
+    for (const roleName of this.staffRoleNames()) {
+      if (await this.isActiveRoleMember(ctx, personId, roleName)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Returns true if `personId` is an Active member of the named Rock security
+   * role. Group-id and membership results are cached. Any Rock error fails
+   * closed (treated as "not a member"), which is the safe default for a gate.
+   */
+  private async isActiveRoleMember(ctx: OAuthRockContext, personId: number, roleName: string): Promise<boolean> {
+    const membershipCacheKey = `role-membership:${personId}:${roleName}`;
+    const cached = this.getCached<boolean>(membershipCacheKey);
     if (cached !== null) return cached;
 
     try {
-      const groupCacheKey = `rsr-group-id`;
-      let groupId = this.getCached<number>(groupCacheKey);
-
-      if (!groupId) {
-        try {
-          const groups = await lookupClient.get<any[]>(ctx, `/api/Groups?$filter=Name eq ${quoteODataString(RockUserResolver.RSR_ROLE_NAME)}`);
-          if (groups && groups.length > 0) {
-            groupId = groups[0].Id;
-          }
-        } catch {
-          // Ignore — user may not have permission to read groups (non-admin)
-        }
-        if (groupId) {
-          this.setCached(groupCacheKey, groupId, 3600000);
-        }
-      }
-
+      const groupId = await this.resolveRoleGroupId(ctx, roleName);
       if (!groupId) {
         return false;
       }
@@ -145,17 +181,44 @@ export class RockUserResolver {
       try {
         // GroupMemberStatus is an integer enum (1 = Active), not a string —
         // filtering with 'Active' silently returns nothing on this v1 OData
-        // instance, which would leave every admin stuck in readonly mode.
-        const members = await lookupClient.get<any[]>(ctx, `/api/GroupMembers?$filter=GroupId eq ${groupId} and PersonId eq ${personId} and GroupMemberStatus eq 1`);
+        // instance, which would leave members stuck without access.
+        const members = await this.rockClient.get<any[]>(
+          ctx,
+          `/api/GroupMembers?$filter=GroupId eq ${groupId} and PersonId eq ${personId} and GroupMemberStatus eq 1`
+        );
         isMember = members && members.length > 0;
       } catch {
-        // Ignore — denied lookups mean "not admin"
+        // Ignore — denied lookups mean "not a member"
       }
 
-      this.setCached(cacheKey, isMember, 300000);
+      this.setCached(membershipCacheKey, isMember, 300000);
       return isMember;
     } catch {
       return false;
     }
+  }
+
+  /** Resolves (and caches) the group Id for a named security role. */
+  private async resolveRoleGroupId(ctx: OAuthRockContext, roleName: string): Promise<number | null> {
+    const groupCacheKey = `role-group-id:${roleName}`;
+    let groupId = this.getCached<number>(groupCacheKey);
+    if (groupId) return groupId;
+
+    try {
+      const groups = await this.rockClient.get<any[]>(
+        ctx,
+        `/api/Groups?$filter=Name eq ${quoteODataString(roleName)}`
+      );
+      if (groups && groups.length > 0) {
+        groupId = groups[0].Id;
+      }
+    } catch {
+      // Ignore — user may not have permission to read groups
+    }
+
+    if (groupId) {
+      this.setCached(groupCacheKey, groupId, 3600000);
+    }
+    return groupId ?? null;
   }
 }

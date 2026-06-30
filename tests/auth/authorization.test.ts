@@ -11,6 +11,7 @@ describe('authorizeWrite', () => {
       scopes: new Set(['read', 'write']),
       rockUser: {
         isRsrAdmin: false,
+        isStaff: false,
         personId: 123,
       },
       oauth: {

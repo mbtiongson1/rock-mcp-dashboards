@@ -28,6 +28,7 @@ export interface OAuthRockContext {
     userLoginId?: number;
     userName?: string;
     isRsrAdmin: boolean;
+    isStaff: boolean;
   };
   request: {
     sessionId: string;
@@ -207,6 +208,7 @@ export function authInfoToOAuthRockContext(authInfo: AuthInfo, req: Request): OA
     },
     rockUser: {
       isRsrAdmin: false,
+      isStaff: false,
     },
     request: {
       sessionId: headerValue(req, 'x-mcp-session-id') || headerValue(req, 'x-session-id') || crypto.randomUUID(),

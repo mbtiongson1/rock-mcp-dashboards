@@ -21,6 +21,7 @@ describe('AuditLogger', () => {
       rockUser: {
         personId: 42,
         isRsrAdmin: true,
+        isStaff: true,
       },
       request: {
         requestId: 'req-abc',

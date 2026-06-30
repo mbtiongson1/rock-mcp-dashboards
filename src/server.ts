@@ -43,6 +43,7 @@ if (isStdio) {
     rockUser: {
       personId: 1,
       isRsrAdmin: true,
+      isStaff: true,
     },
     request: {
       sessionId: 'local-session',

@@ -49,12 +49,15 @@ class FakeRockClient implements RockClient {
   async delete<T>(_ctx: any, _path: string): Promise<T> { return {} as T; }
 }
 
+// MCP access is restricted to Rock administrators, so the default resolved user
+// in these tests is an RSR admin. Non-admin denial is covered separately in the
+// 'admin-only login' suite.
 const stubResolver = {
   resolve: async () => ({
     personId: 100,
     personGuid: 'a0000000-0000-0000-0000-000000000100',
     personAliasId: 100,
-    isRsrAdmin: false,
+    isRsrAdmin: true,
   }),
 } as unknown as RockUserResolver;
 
@@ -221,11 +224,22 @@ describe('handleMcpPost', () => {
       if (path.includes('GetCurrentPerson')) {
         return { Id: 100, Guid: 'a0000000-0000-0000-0000-000000000100', PrimaryAliasId: 100 } as unknown as T;
       }
+      // RSR admin resolution (MCP access is admin-only): return the admin role
+      // group and an active membership for the resolved person.
+      if (path.includes('GroupMembers')) {
+        return [{ Id: 1, GroupId: 7, PersonId: 100, GroupMemberStatus: 1 }] as unknown as T;
+      }
+      if (path.includes('/api/Groups')) {
+        return [{ Id: 7 }] as unknown as T;
+      }
       return [] as unknown as T;
     };
 
     try {
-      const request = new Request('https://mcp.example.com/mcp?url=rock-preview.example.com&server=rock.example.com', {
+      // rock-preview.favor.church is allowed via the legacy favor.church rule;
+      // rock.example.com is the default host (also allowed) passed via ?server=
+      // to prove ?url= takes priority.
+      const request = new Request('https://mcp.example.com/mcp?url=rock-preview.favor.church&server=rock.example.com', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -237,9 +251,9 @@ describe('handleMcpPost', () => {
       const response = await handleMcpPost(request, 'readonly', options);
 
       expect(response.status).toBe(200);
-      expect(factoryCalls).toContain('https://rock-preview.example.com');
+      expect(factoryCalls).toContain('https://rock-preview.favor.church');
       // Assert that actual client operations ran against the overridden URL
-      expect(gotCalls).toContain('https://rock-preview.example.com');
+      expect(gotCalls).toContain('https://rock-preview.favor.church');
       expect(gotCalls).not.toContain('https://rock.example.com');
     } finally {
       FakeRockClient.prototype.get = originalGet;
@@ -377,6 +391,96 @@ describe('handleMcpPost', () => {
       const json = parseMcpBody(text);
       expect(json.result?.tools).toBeInstanceOf(Array);
       expect(json.result.tools.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('access tiers (staff vs admin vs neither)', () => {
+    // Build a resolver for a linked Rock person with the given privilege flags.
+    const resolverFor = (over: { isRsrAdmin?: boolean; isStaff?: boolean }): RockUserResolver =>
+      ({
+        resolve: async () => ({
+          personId: 100,
+          personGuid: 'a0000000-0000-0000-0000-000000000100',
+          personAliasId: 100,
+          isRsrAdmin: false,
+          isStaff: false,
+          ...over,
+        }),
+      } as unknown as RockUserResolver);
+
+    const optionsWith = (
+      scopes: string[],
+      over: { isRsrAdmin?: boolean; isStaff?: boolean }
+    ): CreateAppContextOptions => {
+      const options = appOptions(verifierWithScopes(scopes));
+      options.rockUserResolver = resolverFor(over);
+      return options;
+    };
+
+    const listRequest = () =>
+      mcpRequest(
+        { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} },
+        { Authorization: 'Bearer valid-token' }
+      );
+
+    // ---- Neither staff nor admin: blocked everywhere ----
+    it('blocks a non-staff non-admin on the readonly endpoint (403)', async () => {
+      const response = await handleMcpPost(listRequest(), 'readonly', optionsWith(['read'], {}));
+      expect(response.status).toBe(403);
+      const json = JSON.parse(await readBody(response));
+      expect(json.error).toMatch(/staff|administrator/i);
+    });
+
+    it('blocks a non-staff non-admin on the auto endpoint (403)', async () => {
+      const response = await handleMcpPost(listRequest(), 'mcp', optionsWith(['read', 'write'], {}));
+      expect(response.status).toBe(403);
+    });
+
+    it('logs the block with an ACCESS_DENIED error code', async () => {
+      const logSpy = vi.spyOn(AuditLogger.prototype, 'log');
+      await handleMcpPost(listRequest(), 'readonly', optionsWith(['read'], {}));
+      expect(logSpy.mock.calls.some((c) => c[1].errorCode === 'ACCESS_DENIED')).toBe(true);
+      logSpy.mockRestore();
+    });
+
+    // ---- Staff worker: read-only access ----
+    it('allows a staff worker on the readonly endpoint (200)', async () => {
+      const response = await handleMcpPost(listRequest(), 'readonly', optionsWith(['read'], { isStaff: true }));
+      expect(response.status).toBe(200);
+      const json = parseMcpBody(await readBody(response));
+      expect(json.result?.tools.length).toBeGreaterThan(0);
+    });
+
+    it('downgrades a staff worker on the auto endpoint to read-only (no rock_write tool)', async () => {
+      const response = await handleMcpPost(listRequest(), 'mcp', optionsWith(['read', 'write'], { isStaff: true }));
+      expect(response.status).toBe(200);
+      const json = parseMcpBody(await readBody(response));
+      const tools: any[] = json.result.tools;
+      expect(tools.find((t) => t.name === 'rock_write')).toBeUndefined();
+    });
+
+    it('denies a staff worker on the readwrite endpoint with ADMIN_REQUIRED (403)', async () => {
+      const logSpy = vi.spyOn(AuditLogger.prototype, 'log');
+      const response = await handleMcpPost(listRequest(), 'readwrite', optionsWith(['read', 'write'], { isStaff: true }));
+      expect(response.status).toBe(403);
+      const json = JSON.parse(await readBody(response));
+      expect(json.error).toMatch(/administrator/i);
+      expect(logSpy.mock.calls.some((c) => c[1].errorCode === 'ADMIN_REQUIRED')).toBe(true);
+      logSpy.mockRestore();
+    });
+
+    // ---- Admin: full access ----
+    it('allows an RSR admin on the readonly endpoint (200)', async () => {
+      const response = await handleMcpPost(listRequest(), 'readonly', optionsWith(['read'], { isRsrAdmin: true }));
+      expect(response.status).toBe(200);
+    });
+
+    it('allows an RSR admin on the readwrite endpoint and exposes the rock_write tool (200)', async () => {
+      const response = await handleMcpPost(listRequest(), 'readwrite', optionsWith(['read', 'write'], { isRsrAdmin: true }));
+      expect(response.status).toBe(200);
+      const json = parseMcpBody(await readBody(response));
+      const tools: any[] = json.result.tools;
+      expect(tools.find((t) => t.name === 'rock_write')).toBeDefined();
     });
   });
 });

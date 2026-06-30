@@ -34,6 +34,7 @@ describe('registerGatewayTools', () => {
       rockUser: {
         personId: 123,
         isRsrAdmin: false,
+        isStaff: false,
       },
       request: {
         sessionId: 'session-123',
