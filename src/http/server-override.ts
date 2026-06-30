@@ -5,22 +5,33 @@
  * SECURITY: the per-user RockClient forwards the caller's bearer token to the
  * Rock base URL, so an unvalidated override would leak credentials to an
  * arbitrary host (SSRF + token exfiltration). Overrides are therefore limited
- * to: the configured default host, sibling hosts on the same parent domain
- * (e.g. *.favor.church when the default is rock.favor.church), and hosts
- * explicitly listed in the ROCK_ALLOWED_SERVERS env var (comma-separated).
- * HTTPS is always enforced.
+ * to: the configured default host, hosts explicitly listed in the
+ * ROCK_ALLOWED_SERVERS env var (comma-separated), and — for backwards
+ * compatibility with existing clients — any host under the legacy
+ * `favor.church` domain. HTTPS is always enforced.
+ *
+ * Note: there is intentionally NO implicit "trust the default host's parent
+ * domain" rule. Pointing the deployment at a Rock host on some other domain
+ * does NOT silently trust that whole domain; add explicit hosts to
+ * ROCK_ALLOWED_SERVERS instead.
  */
+
+/**
+ * Legacy backwards-compatibility allowance. Older clients pass favor.church Rock
+ * hosts (e.g. rock-preview.favor.church) via ?server=/?url=, so any host under
+ * this domain stays allowed regardless of the configured default host or
+ * ROCK_ALLOWED_SERVERS. Remove this once all clients use explicit hosts.
+ */
+const LEGACY_ALLOWED_DOMAIN = 'favor.church';
+
+/** True for the legacy domain apex and any subdomain (with a dot boundary). */
+function isLegacyAllowedHost(host: string): boolean {
+  return host === LEGACY_ALLOWED_DOMAIN || host.endsWith(`.${LEGACY_ALLOWED_DOMAIN}`);
+}
 
 export type ServerOverrideResult =
   | { ok: true; baseUrl: string; host: string }
   | { ok: false; error: string };
-
-/** Last two DNS labels of a host, e.g. 'rock.favor.church' → 'favor.church'. */
-function parentDomain(host: string): string | null {
-  const labels = host.split('.').filter(Boolean);
-  if (labels.length < 2) return null;
-  return labels.slice(-2).join('.');
-}
 
 function normalizeHost(input: string): string | null {
   const trimmed = input.trim().toLowerCase();
@@ -65,18 +76,17 @@ export function resolveServerOverride(
     .map((h) => normalizeHost(h))
     .filter((h): h is string => !!h);
 
-  const parent = defaultHost ? parentDomain(defaultHost) : null;
   const allowed =
     (defaultHost && host === defaultHost) ||
-    (parent && (host === parent || host.endsWith(`.${parent}`))) ||
-    extraAllowed.includes(host);
+    extraAllowed.includes(host) ||
+    isLegacyAllowedHost(host);
 
   if (!allowed) {
     return {
       ok: false,
       error: `Server '${host}' is not an allowed Rock host. Allowed: ${[
         defaultHost,
-        parent ? `*.${parent}` : null,
+        `*.${LEGACY_ALLOWED_DOMAIN}`,
         ...extraAllowed,
       ].filter(Boolean).join(', ')}.`,
     };

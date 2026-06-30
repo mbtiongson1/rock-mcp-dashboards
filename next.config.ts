@@ -13,6 +13,30 @@ const nextConfig: NextConfig = {
     '/mcp/readonly': reportViewerIncludes,
     '/mcp/readwrite': reportViewerIncludes,
   },
+  // Baseline security headers applied to every response. These are static and
+  // safe for both the HTML landing page and the JSON MCP/OAuth endpoints. The
+  // landing page additionally sets a per-request, nonce-based
+  // Content-Security-Policy in app/route.ts (a nonce can't be expressed here).
+  async headers() {
+    return [
+      {
+        source: '/:path*',
+        headers: [
+          { key: 'X-Content-Type-Options', value: 'nosniff' },
+          { key: 'X-Frame-Options', value: 'DENY' },
+          { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+          {
+            key: 'Strict-Transport-Security',
+            value: 'max-age=63072000; includeSubDomains; preload',
+          },
+          {
+            key: 'Permissions-Policy',
+            value: 'camera=(), microphone=(), geolocation=(), browsing-topics=()',
+          },
+        ],
+      },
+    ];
+  },
   // The `src/` codebase uses NodeNext-style import specifiers (`./foo.js`
   // resolving to `foo.ts`). Teach webpack to resolve `.js` -> `.ts` so the App
   // Router route handlers can import the existing modules unchanged. Builds and

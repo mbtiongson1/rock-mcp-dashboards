@@ -1,15 +1,37 @@
+/**
+ * Escape a string for safe interpolation into HTML element text / attribute
+ * contexts. `rockUrl` originates from the attacker-controllable `?url=` /
+ * `?server=` query parameter (see app/route.ts), so it MUST be escaped before
+ * it is embedded in the response to prevent reflected XSS.
+ */
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#x27;');
+}
+
 export function getLandingPageHtml(options: {
   redisConfigured: boolean;
   rockUrl: string;
   version: string;
+  /**
+   * Per-request CSP nonce. The page's single <script> carries this nonce so the
+   * Content-Security-Policy can use `script-src 'self' 'nonce-…'` instead of
+   * 'unsafe-inline'. All behavior is wired via addEventListener in that script
+   * (no inline on* handlers), so the strict policy does not break the page.
+   */
+  nonce: string;
 }): string {
-  const { redisConfigured, rockUrl, version } = options;
+  const { redisConfigured, rockUrl, version, nonce } = options;
   const cacheStatus = redisConfigured
     ? '<span class="badge success">Redis Active</span>'
     : '<span class="badge warning">In-Memory Cache</span>';
 
   const maskedRockUrl = rockUrl
-    ? rockUrl.replace(/(https?:\/\/)([^@]+@)?([^/]+).*/, '$1$3')
+    ? escapeHtml(rockUrl.replace(/(https?:\/\/)([^@]+@)?([^/]+).*/, '$1$3'))
     : 'Not configured';
 
   return `<!DOCTYPE html>
@@ -600,7 +622,7 @@ export function getLandingPageHtml(options: {
   <header>
     <div class="header-container">
       <div class="logo-group">
-        <img src="/static/icon.png" alt="Favor Church Logo" class="logo-img" onerror="this.style.display='none'">
+        <img src="/static/icon.png" alt="Favor Church Logo" class="logo-img" id="logo-img">
         <span class="logo-text">Favor Church Rock MCP</span>
       </div>
       <div style="display: flex; align-items: center; gap: 1rem;">
@@ -662,7 +684,7 @@ export function getLandingPageHtml(options: {
           </div>
           <div class="endpoint-path-container">
             <span class="endpoint-path" id="url-mcp">https://rock-mcp.favor.church/mcp</span>
-            <button class="btn-copy" onclick="copyText('url-mcp')" title="Copy URL">
+            <button class="btn-copy" data-copy="url-mcp" title="Copy URL">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
             </button>
           </div>
@@ -688,7 +710,7 @@ export function getLandingPageHtml(options: {
           </div>
           <div class="endpoint-path-container">
             <span class="endpoint-path" id="url-readonly">https://rock-mcp.favor.church/mcp/readonly</span>
-            <button class="btn-copy" onclick="copyText('url-readonly')" title="Copy URL">
+            <button class="btn-copy" data-copy="url-readonly" title="Copy URL">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
             </button>
           </div>
@@ -714,7 +736,7 @@ export function getLandingPageHtml(options: {
           </div>
           <div class="endpoint-path-container">
             <span class="endpoint-path" id="url-readwrite">https://rock-mcp.favor.church/mcp/readwrite</span>
-            <button class="btn-copy" onclick="copyText('url-readwrite')" title="Copy URL">
+            <button class="btn-copy" data-copy="url-readwrite" title="Copy URL">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
             </button>
           </div>
@@ -771,9 +793,9 @@ export function getLandingPageHtml(options: {
       </div>
       
       <div class="tabs-nav">
-        <button class="tab-btn active" onclick="switchTab(event, 'tab-claude')">Claude Desktop</button>
-        <button class="tab-btn" onclick="switchTab(event, 'tab-cursor')">Cursor IDE</button>
-        <button class="tab-btn" onclick="switchTab(event, 'tab-auth')">Authentication</button>
+        <button class="tab-btn active" data-tab="tab-claude">Claude Desktop</button>
+        <button class="tab-btn" data-tab="tab-cursor">Cursor IDE</button>
+        <button class="tab-btn" data-tab="tab-auth">Authentication</button>
       </div>
 
       <div id="tab-claude" class="tab-content active">
@@ -838,14 +860,15 @@ export function getLandingPageHtml(options: {
 
   <div class="toast-container" id="toast-container"></div>
 
-  <script>
+  <script nonce="${nonce}">
     // Copy URL function
     function copyText(elementId) {
-      const urlText = document.getElementById(elementId).innerText;
-      
+      const el = document.getElementById(elementId);
+      if (!el) return;
+
       // Update absolute URL if accessed from another host
-      const finalUrl = urlText.replace('https://rock-mcp.favor.church', window.location.origin);
-      
+      const finalUrl = el.innerText.replace('https://rock-mcp.favor.church', window.location.origin);
+
       navigator.clipboard.writeText(finalUrl).then(() => {
         showToast('Copied to clipboard!');
       }).catch(err => {
@@ -853,19 +876,20 @@ export function getLandingPageHtml(options: {
       });
     }
 
-    // Switch Tabs function
-    function switchTab(evt, tabId) {
+    // Switch Tabs function (receives the clicked button element)
+    function switchTab(button, tabId) {
       // Hide all tabs
       const contents = document.querySelectorAll('.tab-content');
       contents.forEach(content => content.classList.remove('active'));
-      
+
       // Deactivate all buttons
       const buttons = document.querySelectorAll('.tab-btn');
       buttons.forEach(btn => btn.classList.remove('active'));
-      
+
       // Show targeted tab
-      document.getElementById(tabId).classList.add('active');
-      evt.currentTarget.classList.add('active');
+      const target = document.getElementById(tabId);
+      if (target) target.classList.add('active');
+      button.classList.add('active');
     }
 
     // Toast notification function
@@ -889,14 +913,30 @@ export function getLandingPageHtml(options: {
       }, 3000);
     }
 
-    // Update copyable URLs dynamically with current hostname
     document.addEventListener('DOMContentLoaded', () => {
+      // Update copyable URLs dynamically with current hostname
       ['url-mcp', 'url-readonly', 'url-readwrite'].forEach(id => {
         const el = document.getElementById(id);
         if (el) {
           el.innerText = el.innerText.replace('https://rock-mcp.favor.church', window.location.origin);
         }
       });
+
+      // Wire copy buttons (CSP-safe: no inline on* handlers).
+      document.querySelectorAll('.btn-copy[data-copy]').forEach(btn => {
+        btn.addEventListener('click', () => copyText(btn.getAttribute('data-copy')));
+      });
+
+      // Wire integration-guide tabs.
+      document.querySelectorAll('.tab-btn[data-tab]').forEach(btn => {
+        btn.addEventListener('click', () => switchTab(btn, btn.getAttribute('data-tab')));
+      });
+
+      // Logo fallback (replaces the former inline onerror handler).
+      const logo = document.getElementById('logo-img');
+      if (logo) {
+        logo.addEventListener('error', () => { logo.style.display = 'none'; });
+      }
     });
   </script>
 </body>
