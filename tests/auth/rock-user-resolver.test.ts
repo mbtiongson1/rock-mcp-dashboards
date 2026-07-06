@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { RockUserResolver } from '../../src/auth/rock-user-resolver.js';
+import { RockUserResolver, isActiveGroupMemberStatus } from '../../src/auth/rock-user-resolver.js';
 import { RockClient } from '../../src/rock/client.js';
 import { OAuthRockContext } from '../../src/http/oauth.js';
 
@@ -113,10 +113,12 @@ describe('RockUserResolver', () => {
         return [{ Id: 99, Name: 'RSR - Rock Administration' }];
       }
       if (path.includes('/api/GroupMembers')) {
-        // GroupMemberStatus is an integer enum (1 = Active); the string form
-        // 'Active' silently matches nothing on this v1 OData instance.
-        expect(path).toContain('GroupMemberStatus eq 1');
-        expect(path).not.toContain("GroupMemberStatus eq 'Active'");
+        // The membership $filter must scope by group+person only. Never compare
+        // the GroupMemberStatus enum in the filter — Rock's EDM types it as a
+        // string and comparing to an integer 400s; status is checked in code.
+        expect(path).toContain('GroupId eq');
+        expect(path).toContain('PersonId eq');
+        expect(path).not.toContain('GroupMemberStatus');
         return [{ Id: 1001, PersonId: 1, GroupId: 99, GroupMemberStatus: 1 }];
       }
       return [];
@@ -125,6 +127,52 @@ describe('RockUserResolver', () => {
     const result = await resolver.resolve(mockCtx, oauth);
 
     expect(result.isRsrAdmin).toBe(true);
+  });
+
+  it('counts a member as active whether GroupMemberStatus is 1 or "Active"', async () => {
+    for (const status of [1, 'Active']) {
+      const client = createMockClient();
+      client.get = vi.fn().mockImplementation(async (_ctx, path) => {
+        if (path.includes('/api/People')) {
+          return [{ Id: 1, PrimaryAliasId: 10, Guid: '550e8400-e29b-41d4-a716-446655440001' }];
+        }
+        if (path.includes('/api/Groups')) {
+          return [{ Id: 99, Name: 'RSR - Rock Administration' }];
+        }
+        if (path.includes('/api/GroupMembers')) {
+          return [{ Id: 1001, PersonId: 1, GroupId: 99, GroupMemberStatus: status }];
+        }
+        return [];
+      });
+      const result = await new RockUserResolver(client).resolve(mockCtx, {
+        subject: `admin-${status}`,
+        email: 'admin@example.com',
+      });
+      expect(result.isRsrAdmin, `status=${status}`).toBe(true);
+    }
+  });
+
+  it('does not count an inactive member (0 / "Inactive") as active', async () => {
+    for (const status of [0, 'Inactive']) {
+      const client = createMockClient();
+      client.get = vi.fn().mockImplementation(async (_ctx, path) => {
+        if (path.includes('/api/People')) {
+          return [{ Id: 1, PrimaryAliasId: 10, Guid: '550e8400-e29b-41d4-a716-446655440001' }];
+        }
+        if (path.includes('/api/Groups')) {
+          return [{ Id: 99, Name: 'RSR - Rock Administration' }];
+        }
+        if (path.includes('/api/GroupMembers')) {
+          return [{ Id: 1001, PersonId: 1, GroupId: 99, GroupMemberStatus: status }];
+        }
+        return [];
+      });
+      const result = await new RockUserResolver(client).resolve(mockCtx, {
+        subject: `inactive-${status}`,
+        email: 'inactive@example.com',
+      });
+      expect(result.isRsrAdmin, `status=${status}`).toBe(false);
+    }
   });
 
   it('uses the user token for the RSR lookup and fails closed when Rock denies it', async () => {
@@ -265,5 +313,18 @@ describe('RockUserResolver', () => {
         else process.env.ROCK_STAFF_ROLE_NAMES = prev;
       }
     });
+  });
+});
+
+describe('isActiveGroupMemberStatus', () => {
+  it('accepts both the integer and string "Active" representations', () => {
+    expect(isActiveGroupMemberStatus(1)).toBe(true);
+    expect(isActiveGroupMemberStatus('Active')).toBe(true);
+  });
+
+  it('rejects inactive, unknown, and missing values', () => {
+    for (const v of [0, 'Inactive', 2, '1', null, undefined, {}]) {
+      expect(isActiveGroupMemberStatus(v), `value=${JSON.stringify(v)}`).toBe(false);
+    }
   });
 });
