@@ -115,6 +115,10 @@ but read it only if explicitly asked — see the note at the top of this file.)
 - Bearer-JWT auth to Rock needs a JWT Config defined value and a search-key backfill from the
   `AUTH0_*` UserLogins on the Rock side.
 - `Reports/run` can 404; use `$select=Id` when you only need counts.
+- Never compare an enum (e.g. `GroupMemberStatus`) to an integer in a v1 OData
+  `$filter` — the EDM type is string and Rock 400s (*"incompatible types
+  'Edm.String' and 'Edm.Int32'"*). Filter by ids only and check the enum
+  client-side, accepting both representations (`1` and `'Active'`).
 
 ## Environment
 

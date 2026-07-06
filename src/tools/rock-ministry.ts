@@ -7,6 +7,7 @@ import { formatResponse } from './formatter.js';
 import { RockClient } from '../rock/client.js';
 import { AuditLogger } from '../auth/audit.js';
 import { authorizeWrite } from '../auth/authorization.js';
+import { isActiveGroupMemberStatus } from '../auth/rock-user-resolver.js';
 import { StoredDataset } from './dataset-store.js';
 
 // Constants for bounded analysis
@@ -188,7 +189,7 @@ export const rockMinistryTool: GatewayTool = {
           personId: m.PersonId || (m.Person ? m.Person.Id : null),
           personName: m.Person ? `${m.Person.NickName || m.Person.FirstName} ${m.Person.LastName}` : 'Unknown',
           role: m.GroupRole ? m.GroupRole.Name : 'Member',
-          status: m.GroupMemberStatus === 1 ? 'Active' : 'Inactive',
+          status: isActiveGroupMemberStatus(m.GroupMemberStatus) ? 'Active' : 'Inactive',
         }));
 
         return formatResponse(parsed.action, ctx, safeMembers);

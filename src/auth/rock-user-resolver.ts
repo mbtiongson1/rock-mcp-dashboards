@@ -2,6 +2,17 @@ import { RockClient } from '../rock/client.js';
 import { OAuthRockContext } from '../http/oauth.js';
 import { quoteODataString, assertValidGuid } from '../rock/query.js';
 
+/**
+ * True if a GroupMember's `GroupMemberStatus` represents "Active". Rock's enum
+ * has serialized both ways across instances/paths — integer `1` (JSON model
+ * binding) and string `'Active'` (some OData/EDM responses) — so accept both.
+ * Never compare this enum to an integer inside an OData `$filter`; the EDM type
+ * is string and Rock 400s (see CLAUDE.md "Known Rock API quirks").
+ */
+export function isActiveGroupMemberStatus(status: unknown): boolean {
+  return status === 1 || status === 'Active';
+}
+
 export interface ResolvedRockUser {
   personId?: number;
   personGuid?: string;
@@ -179,14 +190,16 @@ export class RockUserResolver {
 
       let isMember = false;
       try {
-        // GroupMemberStatus is an integer enum (1 = Active), not a string —
-        // filtering with 'Active' silently returns nothing on this v1 OData
-        // instance, which would leave members stuck without access.
+        // GroupMemberStatus is an enum whose OData/EDM representation has
+        // differed across Rock instances (string 'Active' vs integer 1) —
+        // comparing it in the $filter has broken this gate both ways (400 type
+        // error / empty match). Filter by group+person only (at most a handful
+        // of rows) and check status client-side.
         const members = await this.rockClient.get<any[]>(
           ctx,
-          `/api/GroupMembers?$filter=GroupId eq ${groupId} and PersonId eq ${personId} and GroupMemberStatus eq 1`
+          `/api/GroupMembers?$filter=GroupId eq ${groupId} and PersonId eq ${personId}`
         );
-        isMember = members && members.length > 0;
+        isMember = (members ?? []).some((m) => isActiveGroupMemberStatus(m.GroupMemberStatus));
       } catch {
         // Ignore — denied lookups mean "not a member"
       }
