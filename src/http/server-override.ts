@@ -22,11 +22,17 @@
  * this domain stays allowed regardless of the configured default host or
  * ROCK_ALLOWED_SERVERS. Remove this once all clients use explicit hosts.
  */
-const LEGACY_ALLOWED_DOMAIN = 'favor.church';
+function getLegacyAllowedDomain(): string {
+  return process.env.LEGACY_ALLOWED_DOMAIN !== undefined
+    ? process.env.LEGACY_ALLOWED_DOMAIN.trim()
+    : 'favor.church';
+}
 
 /** True for the legacy domain apex and any subdomain (with a dot boundary). */
 function isLegacyAllowedHost(host: string): boolean {
-  return host === LEGACY_ALLOWED_DOMAIN || host.endsWith(`.${LEGACY_ALLOWED_DOMAIN}`);
+  const legacyDomain = getLegacyAllowedDomain();
+  if (!legacyDomain) return false;
+  return host === legacyDomain || host.endsWith(`.${legacyDomain}`);
 }
 
 export type ServerOverrideResult =
@@ -82,13 +88,16 @@ export function resolveServerOverride(
     isLegacyAllowedHost(host);
 
   if (!allowed) {
+    const legacyDomain = getLegacyAllowedDomain();
+    const allowedList = [
+      defaultHost,
+      legacyDomain ? `*.${legacyDomain}` : null,
+      ...extraAllowed,
+    ].filter((h): h is string | null => !!h);
+
     return {
       ok: false,
-      error: `Server '${host}' is not an allowed Rock host. Allowed: ${[
-        defaultHost,
-        `*.${LEGACY_ALLOWED_DOMAIN}`,
-        ...extraAllowed,
-      ].filter(Boolean).join(', ')}.`,
+      error: `Server '${host}' is not an allowed Rock host. Allowed: ${allowedList.join(', ')}.`,
     };
   }
 

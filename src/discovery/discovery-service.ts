@@ -12,7 +12,7 @@ import {
   RockAttribute,
 } from './confidence.js';
 
-export interface FavorDiscoveryMap {
+export interface RockDiscoveryMap {
   generatedAt: string;
   rockBaseUrlHash: string;
   rockVersion?: string;
@@ -42,7 +42,7 @@ interface CacheEntry<T> {
 }
 
 export class DiscoveryService {
-  private inMemoryMaps = new Map<string, CacheEntry<FavorDiscoveryMap>>();
+  private inMemoryMaps = new Map<string, CacheEntry<RockDiscoveryMap>>();
 
   constructor(
     private rockClient: RockClient,
@@ -59,7 +59,7 @@ export class DiscoveryService {
     return `${prefix}discovery:v17.7:${this.getCachePartition(ctx)}`;
   }
 
-  public async getMap(ctx: OAuthRockContext): Promise<FavorDiscoveryMap> {
+  public async getMap(ctx: OAuthRockContext): Promise<RockDiscoveryMap> {
     const cachePartition = this.getCachePartition(ctx);
 
     // Check in-memory cache
@@ -119,7 +119,7 @@ export class DiscoveryService {
     await this.getMap(ctx);
   }
 
-  private async runDiscovery(ctx: OAuthRockContext): Promise<FavorDiscoveryMap> {
+  private async runDiscovery(ctx: OAuthRockContext): Promise<RockDiscoveryMap> {
     const generatedAt = new Date().toISOString();
     const rockBaseUrl = this.rockClient.baseUrl || process.env.ROCK_PUBLIC_URL || process.env.ROCK_API_URL || process.env.ROCK_BASE_URL || 'local';
     const rockBaseUrlHash = crypto.createHash('sha256').update(rockBaseUrl).digest('hex');

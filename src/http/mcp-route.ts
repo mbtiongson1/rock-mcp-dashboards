@@ -123,8 +123,9 @@ export async function handleMcpPost(
     // resolveMode, which throws AdminRequiredError for a non-admin staff user.)
     if (!resolvedUser.isRsrAdmin && !resolvedUser.isStaff) {
       const email = ctx.oauth.email || ctx.oauth.subject;
+      const orgName = process.env.ORGANIZATION_NAME || 'Favor Church';
       throw new AccessDeniedError(
-        `Access to this MCP is restricted to Favor Church staff and Rock administrators. Your account (${email}) is not a recognized staff member or administrator.`,
+        `Access to this MCP is restricted to ${orgName} staff and Rock administrators. Your account (${email}) is not a recognized staff member or administrator.`,
         email
       );
     }
