@@ -39,7 +39,7 @@ export const rockLookupTool: GatewayTool = {
     return rockLookupSchema;
   },
   descriptionForMode(_mode: McpMode): string {
-    return 'Enables runtime discovery of Favor concepts and dynamic searches across Rock entities without exposing IDs.';
+    return 'Enables runtime discovery of Rock concepts and dynamic searches across Rock entities without exposing IDs.';
   },
   async handle(args: any, _extra: any, ctx: OAuthRockContext): Promise<McpToolResult> {
     const parsed = rockLookupSchema.parse(args);

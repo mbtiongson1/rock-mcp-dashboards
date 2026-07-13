@@ -26,6 +26,9 @@ export function getLandingPageHtml(options: {
   nonce: string;
 }): string {
   const { redisConfigured, rockUrl, version, nonce } = options;
+  const orgName = process.env.ORGANIZATION_NAME || 'Favor Church';
+  const serverUrl = (process.env.SERVER_URL || 'https://rock-mcp.favor.church').replace(/\/$/, '');
+  const githubUrl = process.env.GITHUB_REPOSITORY_URL || 'https://github.com/favorchurch/rock-mcp';
   const cacheStatus = redisConfigured
     ? '<span class="badge success">Redis Active</span>'
     : '<span class="badge warning">In-Memory Cache</span>';
@@ -39,7 +42,7 @@ export function getLandingPageHtml(options: {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Favor Church Rock MCP Server</title>
+  <title>${escapeHtml(orgName)} Rock MCP Server</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -622,11 +625,11 @@ export function getLandingPageHtml(options: {
   <header>
     <div class="header-container">
       <div class="logo-group">
-        <img src="/static/icon.png" alt="Favor Church Logo" class="logo-img" id="logo-img">
-        <span class="logo-text">Favor Church Rock MCP</span>
+        <img src="/static/icon.png" alt="${escapeHtml(orgName)} Logo" class="logo-img" id="logo-img">
+        <span class="logo-text">${escapeHtml(orgName)} Rock MCP</span>
       </div>
       <div style="display: flex; align-items: center; gap: 1rem;">
-        <a href="https://github.com/favorchurch/rock-mcp" target="_blank" rel="noopener noreferrer" class="github-link">
+        <a href="${escapeHtml(githubUrl)}" target="_blank" rel="noopener noreferrer" class="github-link">
           <svg height="16" width="16" viewBox="0 0 16 16" fill="currentColor" style="vertical-align: middle;"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
           GitHub
         </a>
@@ -644,7 +647,7 @@ export function getLandingPageHtml(options: {
       <p>Secure, low-token action-router interface for Rock RMS v17.7. Connects Claude, Cursor, and other AI clients to church operations.</p>
       
       <div style="margin-top: 0.5rem; margin-bottom: 1rem; display: flex; justify-content: center; gap: 1rem;">
-        <a href="https://github.com/favorchurch/rock-mcp" target="_blank" rel="noopener noreferrer" class="btn-primary-link">
+        <a href="${escapeHtml(githubUrl)}" target="_blank" rel="noopener noreferrer" class="btn-primary-link">
           <svg height="18" width="18" viewBox="0 0 16 16" fill="currentColor" style="vertical-align: middle;"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
           View on GitHub
         </a>
@@ -683,7 +686,7 @@ export function getLandingPageHtml(options: {
             Detects user status automatically. Upgrades to readwrite mode for admins with write scopes; defaults to readonly.
           </div>
           <div class="endpoint-path-container">
-            <span class="endpoint-path" id="url-mcp">https://rock-mcp.favor.church/mcp</span>
+            <span class="endpoint-path" id="url-mcp">${escapeHtml(serverUrl)}/mcp</span>
             <button class="btn-copy" data-copy="url-mcp" title="Copy URL">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
             </button>
@@ -709,7 +712,7 @@ export function getLandingPageHtml(options: {
             Enforces a read-only context. Safe default for standard operations. Ideal for broad, lower-risk LLM access.
           </div>
           <div class="endpoint-path-container">
-            <span class="endpoint-path" id="url-readonly">https://rock-mcp.favor.church/mcp/readonly</span>
+            <span class="endpoint-path" id="url-readonly">${escapeHtml(serverUrl)}/mcp/readonly</span>
             <button class="btn-copy" data-copy="url-readonly" title="Copy URL">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
             </button>
@@ -735,7 +738,7 @@ export function getLandingPageHtml(options: {
             Explicitly registers read and write tools. Requires OAuth client write credentials. Runs operations as the user.
           </div>
           <div class="endpoint-path-container">
-            <span class="endpoint-path" id="url-readwrite">https://rock-mcp.favor.church/mcp/readwrite</span>
+            <span class="endpoint-path" id="url-readwrite">${escapeHtml(serverUrl)}/mcp/readwrite</span>
             <button class="btn-copy" data-copy="url-readwrite" title="Copy URL">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
             </button>
@@ -800,7 +803,7 @@ export function getLandingPageHtml(options: {
 
       <div id="tab-claude" class="tab-content active">
         <div class="guide-text">
-          <p>To register the Favor Church Rock MCP server in your Claude Desktop app, point the client at the MCP URL. Claude will discover the OAuth metadata and prompt you to sign in with Rock/Auth0.</p>
+          <p>To register the ${escapeHtml(orgName)} Rock MCP server in your Claude Desktop app, point the client at the MCP URL. Claude will discover the OAuth metadata and prompt you to sign in with Rock/Auth0.</p>
           <ul>
             <li><strong>MacOS:</strong> <code>~/Library/Application Support/Claude/claude_desktop_config.json</code></li>
             <li><strong>Windows:</strong> <code>%APPDATA%\\Claude\\claude_desktop_config.json</code></li>
@@ -815,7 +818,7 @@ export function getLandingPageHtml(options: {
         "-y",
         "@modelcontextprotocol/sdk",
         "connect",
-        "https://rock-mcp.favor.church/mcp"
+        "${escapeHtml(serverUrl)}/mcp"
       ]
     }
   }
@@ -833,7 +836,7 @@ export function getLandingPageHtml(options: {
               <ul>
                 <li><strong>Name:</strong> <code>rock-mcp</code></li>
                 <li><strong>Type:</strong> <code>command</code></li>
-                <li><strong>Command:</strong> <code>npx -y @modelcontextprotocol/sdk connect https://rock-mcp.favor.church/mcp</code></li>
+                <li><strong>Command:</strong> <code>npx -y @modelcontextprotocol/sdk connect ${escapeHtml(serverUrl)}/mcp</code></li>
               </ul>
             </li>
           </ol>
@@ -855,7 +858,7 @@ export function getLandingPageHtml(options: {
   </main>
 
   <footer>
-    <p>&copy; 2026 Favor Church Manila. All rights reserved.</p>
+    <p>&copy; 2026 ${escapeHtml(orgName)}. All rights reserved.</p>
   </footer>
 
   <div class="toast-container" id="toast-container"></div>
@@ -867,7 +870,7 @@ export function getLandingPageHtml(options: {
       if (!el) return;
 
       // Update absolute URL if accessed from another host
-      const finalUrl = el.innerText.replace('https://rock-mcp.favor.church', window.location.origin);
+      const finalUrl = el.innerText.replace('${serverUrl}', window.location.origin);
 
       navigator.clipboard.writeText(finalUrl).then(() => {
         showToast('Copied to clipboard!');
@@ -918,7 +921,7 @@ export function getLandingPageHtml(options: {
       ['url-mcp', 'url-readonly', 'url-readwrite'].forEach(id => {
         const el = document.getElementById(id);
         if (el) {
-          el.innerText = el.innerText.replace('https://rock-mcp.favor.church', window.location.origin);
+          el.innerText = el.innerText.replace('${serverUrl}', window.location.origin);
         }
       });
 

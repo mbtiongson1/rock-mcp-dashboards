@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 // @ts-ignore
 import { resolveServerOverride } from '../../src/http/server-override.js';
 
@@ -69,5 +69,29 @@ describe('resolveServerOverride', () => {
   it('still rejects unlisted hosts when an env list is present', () => {
     const result = resolveServerOverride('bad.other.org', DEFAULT_BASE, 'rock.other.org');
     expect(result.ok).toBe(false);
+  });
+
+  it('allows dynamic LEGACY_ALLOWED_DOMAIN from env variables', () => {
+    vi.stubEnv('LEGACY_ALLOWED_DOMAIN', 'mychurch.org');
+    try {
+      const result = resolveServerOverride('rock.mychurch.org', DEFAULT_BASE);
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.baseUrl).toBe('https://rock.mychurch.org');
+      
+      const oldDomainResult = resolveServerOverride('rock.favor.church', DEFAULT_BASE);
+      expect(oldDomainResult.ok).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('completely disables legacy allowed domains when set to empty string', () => {
+    vi.stubEnv('LEGACY_ALLOWED_DOMAIN', '');
+    try {
+      const result = resolveServerOverride('rock.favor.church', DEFAULT_BASE);
+      expect(result.ok).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

@@ -118,8 +118,19 @@ export function scoreLifecycleAttribute(attr: RockAttribute): { confidence: numb
   const key = attr.Key || '';
   const combined = `${name} ${key}`.toLowerCase();
 
+  // Get dynamic/custom lifecycle terms
+  const rawTerms = process.env.LIFECYCLE_TERMS;
+  const customLifecycleTerms = rawTerms
+    ? rawTerms.split(',').map(t => t.trim().toLowerCase())
+    : ['new', 'crowd', 'core', 'leader'];
+
   // Check name/key for lifecycle keywords
-  const lifecycleTerms = ['lifecycle', 'connection status', 'connectionstatus', 'new', 'crowd', 'core', 'leader'];
+  const lifecycleTerms = [
+    'lifecycle',
+    'connection status',
+    'connectionstatus',
+    ...customLifecycleTerms,
+  ];
   const matchedTerms = lifecycleTerms.filter(term => combined.includes(term));
 
   if (matchedTerms.length > 0) {
@@ -127,15 +138,14 @@ export function scoreLifecycleAttribute(attr: RockAttribute): { confidence: numb
     signals.push(`name/key contains lifecycle term(s): ${matchedTerms.join(', ')}`);
   }
 
-  // Check defined values for Favor lifecycle terms
-  const favorLifecycleTerms = ['new', 'crowd', 'core', 'leader'];
+  // Check defined values for custom lifecycle terms
   if (attr.AttributeValues && Array.isArray(attr.AttributeValues)) {
     const values = attr.AttributeValues.map(av => (av.Value || '').toLowerCase());
-    const matchedValues = favorLifecycleTerms.filter(term => values.some(v => v.includes(term)));
+    const matchedValues = customLifecycleTerms.filter(term => values.some(v => v.includes(term)));
 
     if (matchedValues.length >= 2) {
       confidence += 0.30;
-      signals.push(`defined values include multiple Favor lifecycle terms: ${matchedValues.join(', ')}`);
+      signals.push(`defined values include multiple lifecycle terms: ${matchedValues.join(', ')}`);
     }
   }
 

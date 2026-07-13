@@ -2,7 +2,7 @@ import { OAuthRockContext } from '../../http/oauth.js';
 import { RockClient } from '../../rock/client.js';
 import { getDefinedValueMap } from '../../rock/defined-values.js';
 import { countByConnectionStatus } from '../../tools/rock-people.js';
-import type { FavorDiscoveryMap } from '../../discovery/discovery-service.js';
+import type { RockDiscoveryMap } from '../../discovery/discovery-service.js';
 import { LiveBinding } from './wiki-types.js';
 
 interface DiscoveryCandidateLike {
@@ -22,7 +22,7 @@ function renderCandidateList(items: DiscoveryCandidateLike[] | undefined): strin
     .join('\n');
 }
 
-async function getMapSafe(ctx: OAuthRockContext): Promise<FavorDiscoveryMap | null> {
+async function getMapSafe(ctx: OAuthRockContext): Promise<RockDiscoveryMap | null> {
   const ds = (ctx as any).discoveryService;
   if (!ds || typeof ds.getMap !== 'function') return null;
   try {

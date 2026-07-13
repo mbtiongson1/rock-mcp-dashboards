@@ -3,7 +3,7 @@ import { z } from 'zod';
 /**
  * A `liveBinding` connects a curated wiki article to a live Rock structure so
  * the handler can append current values/counts at read time. Each kind maps to
- * a slice of the FavorDiscoveryMap (or, for `definedType`, to a DefinedValue
+ * a slice of the RockDiscoveryMap (or, for `definedType`, to a DefinedValue
  * lookup) — see `live-overlay.ts`.
  */
 export const liveBindingSchema = z.discriminatedUnion('kind', [

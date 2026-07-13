@@ -24,6 +24,7 @@ export function getRockGuideText(mode: McpMode): string {
       // try next candidate
     }
   }
+  const orgName = process.env.ORGANIZATION_NAME || 'Favor Church';
   // Fallback if files aren't found (e.g. in certain test environments)
-  return `Favor Church Rock MCP Guide (${mode} mode). Use rock_lookup when mapping is unknown.`;
+  return `${orgName} Rock MCP Guide (${mode} mode). Use rock_lookup when mapping is unknown.`;
 }

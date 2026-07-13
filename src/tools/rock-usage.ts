@@ -9,7 +9,7 @@ import { getTopic, listTopics, searchTopics } from '../mcp/wiki/wiki-store.js';
 import { renderLiveOverlay } from '../mcp/wiki/live-overlay.js';
 
 const WIKI_HINT =
-  'This tool also doubles as a searchable Favor Rock wiki: call with `{list:true}` to see best-practice topics, `{query:"..."}` to search them, or `{topic:"connection-status"}` to read one (with current live values).';
+  'This tool also doubles as a searchable Rock wiki: call with `{list:true}` to see best-practice topics, `{query:"..."}` to search them, or `{topic:"connection-status"}` to read one (with current live values).';
 
 export const rockUsageTool: GatewayTool = {
   name: 'rock_usage',
