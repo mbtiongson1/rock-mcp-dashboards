@@ -8,7 +8,9 @@ dist
 .gemini
 .vercel
 .claude
-.agents
+.agents/*
+!.agents/skills/
+!.agents/skills/**
 
 .next
 next-env.d.ts

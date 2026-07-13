@@ -1,0 +1,4 @@
+interface:
+  display_name: "Implement with Discernment"
+  short_description: "Choose direct, delegated, or hybrid execution"
+  default_prompt: "Use $implement-with-discernment to choose and execute the right implementation mode."

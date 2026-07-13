@@ -1,0 +1,4 @@
+interface:
+  display_name: "Delegate to Codex"
+  short_description: "Run bounded Codex workers with safe defaults"
+  default_prompt: "Use $codex-delegate to delegate this implementation task safely."
