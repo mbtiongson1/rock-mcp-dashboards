@@ -10,7 +10,7 @@ export {
 } from '@modelcontextprotocol/sdk/server/auth/router.js';
 
 export interface OAuthRockContext {
-  endpoint: 'mcp' | 'readonly' | 'readwrite';
+  endpoint: 'mcp' | 'readonly';
   mode: 'readonly' | 'readwrite';
   scopes: Set<'read' | 'write'>;
   rockUserToken?: string;

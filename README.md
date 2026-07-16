@@ -25,7 +25,7 @@ Top-level layout:
 
 | Path | Purpose |
 | --- | --- |
-| `app/` | Next.js route handlers for `/mcp`, `/mcp/readonly`, `/mcp/readwrite`, `/oauth/*`, and OAuth metadata routes. |
+| `app/` | Next.js route handlers for `/mcp`, `/mcp/readonly`, `/oauth/*`, and OAuth metadata routes. |
 | `src/http/` | Fetch-native HTTP layer, OAuth proxy, token validation, dynamic client registration, app context construction, and Rock server override checks. |
 | `src/mcp/` | MCP mode resolution, guide text, tool registration, and MCP App resource registration. |
 | `src/tools/` | Gateway tools for usage, lookup, entity access, people, ministry, reports, workflows, and writes. |
@@ -109,8 +109,7 @@ Environment variables are loaded by Next/Vercel for HTTP routes. `src/server.ts`
 Security-sensitive mode behavior:
 
 - `/mcp/readonly` requires `read` and always exposes read-only tools.
-- `/mcp/readwrite` requires `read` and `write`.
-- `/mcp` requires `read` and upgrades to read-write only when the token has `write` and the resolved Rock person is an RSR admin.
+- `/mcp` requires `read` and upgrades to read-write only when the token has `write` and the resolved Rock person is an RSR admin **or** an active group leader (leads at least one group). Group leaders may use `rock_ministry`/`rock_roster` writes only for the groups they lead; `rock_people`, `rock_write`, and workflow/connection writes remain admin-only.
 - Person resolution failures fail closed before tools are registered.
 - Mutating tools default to `dryRun: true`; persisted writes require `dryRun: false`, `commit: true`, and a non-empty `reason`.
 
@@ -150,9 +149,8 @@ Expected public endpoints:
 | Endpoint | Purpose |
 | --- | --- |
 | `/` | Landing/status page. |
-| `/mcp` | Auto read/read-write MCP endpoint. |
+| `/mcp` | Auto read/read-write MCP endpoint (upgrades for admins and group leaders with the `write` scope). |
 | `/mcp/readonly` | Forced read-only MCP endpoint. |
-| `/mcp/readwrite` | Forced read-write MCP endpoint. |
 | `/oauth/register` | Dynamic client registration for MCP clients. |
 | `/oauth/authorize` | OAuth authorization proxy endpoint. |
 | `/oauth/callback` | Fixed Auth0 callback target for the proxy. |

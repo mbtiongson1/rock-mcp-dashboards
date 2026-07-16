@@ -91,8 +91,9 @@ export const rockUsageTool: GatewayTool = {
 
 /**
  * Explain why the current session is read-only or read-write. On the `/mcp`
- * auto endpoint, write access requires BOTH the `write` scope AND RSR-admin
- * status, so surface all three signals to make "why can't I write?" diagnosable.
+ * auto endpoint, write access requires the `write` scope AND (RSR-admin status
+ * OR leading at least one group), so surface all three signals to make
+ * "why can't I write?" diagnosable.
  */
 function describeWriteAccess(ctx: OAuthRockContext): string {
   const scopes = [...(ctx.scopes ?? [])];
@@ -110,12 +111,10 @@ function describeWriteAccess(ctx: OAuthRockContext): string {
   if (ctx.mode !== 'readwrite') {
     if (ctx.endpoint === 'mcp') {
       lines.push(
-        `Read-only because ${!hasWrite ? 'the token lacks the write scope' : 'the user is not an RSR admin'}. The /mcp endpoint upgrades to readwrite only with write scope AND RSR-admin membership.`
+        `Read-only because ${!hasWrite ? 'the token lacks the write scope' : 'the user is neither an RSR admin nor an active group leader'}. The /mcp endpoint upgrades to readwrite only with write scope AND (RSR-admin membership OR leading at least one group).`
       );
-    } else if (ctx.endpoint === 'readwrite') {
-      lines.push('Read-only despite the readwrite endpoint — the token lacks the write scope.');
     } else {
-      lines.push('This is the readonly endpoint; connect via /mcp or /mcp/readwrite for write access.');
+      lines.push('This is the readonly endpoint; connect via /mcp for write access.');
     }
   }
   return lines.join('\n');

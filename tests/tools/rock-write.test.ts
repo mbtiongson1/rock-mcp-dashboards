@@ -31,7 +31,7 @@ describe('rock_write tool', () => {
         personId: 456,
         isRsrAdmin: true, // most rock_write scenarios below exercise admin-tier models (people/notes/connectionrequests)
       },
-      endpoint: '/mcp/readwrite',
+      endpoint: 'mcp',
     } as unknown as OAuthRockContext;
   });
 
