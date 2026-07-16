@@ -44,6 +44,7 @@ if (isStdio) {
       personId: 1,
       isRsrAdmin: true,
       isStaff: true,
+      ledGroupIds: [],
     },
     request: {
       sessionId: 'local-session',

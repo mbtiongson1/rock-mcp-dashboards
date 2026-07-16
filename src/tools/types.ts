@@ -19,8 +19,16 @@ export interface McpToolResult {
 export interface GatewayTool {
   name: string;
   title: string;
-  /** Return a Zod schema for visible tools or null to hide the tool in this mode. */
-  schemaForMode(mode: McpMode, scopes: Set<McpScope>): z.ZodTypeAny | null;
+  /**
+   * Return a Zod schema for visible tools or null to hide the tool in this mode.
+   * `caps` reflects the resolved caller's capability tier: `isStaffOrAdmin === false`
+   * while admitted means a leader-only / restricted user.
+   */
+  schemaForMode(
+    mode: McpMode,
+    scopes: Set<McpScope>,
+    caps: { isAdmin: boolean; isStaffOrAdmin: boolean }
+  ): z.ZodTypeAny | null;
   /** Human-readable description used when advertising the tool to MCP clients. */
   descriptionForMode(mode: McpMode): string;
   /** Execute the tool with already-validated args and the request-scoped context. */

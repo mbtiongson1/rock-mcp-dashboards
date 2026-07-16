@@ -42,7 +42,7 @@ describe('rock_people tool', () => {
       rockClient: mockClient,
       discoveryService: mockDiscoveryService,
       oauth: { subject: 'test-user' },
-      rockUser: { personId: 123 },
+      rockUser: { personId: 123, isRsrAdmin: true }, // people/phonenumbers/connectionrequests are admin-tier writes
       request: { sessionId: 'session-123' },
     } as unknown as OAuthRockContext;
   });
@@ -1146,7 +1146,7 @@ describe('rock_people tool', () => {
     });
 
     it('is available in readonly mode', async () => {
-      const schema = rockPeopleTool.schemaForMode('readonly', new Set(['read']));
+      const schema = rockPeopleTool.schemaForMode('readonly', new Set(['read']), { isAdmin: false, isStaffOrAdmin: false });
       expect(schema).not.toBeNull();
 
       mockFilterPost(5, sampleRows);

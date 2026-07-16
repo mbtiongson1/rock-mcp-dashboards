@@ -31,9 +31,11 @@ Key properties: mandatory **PKCE S256**, single-use auth + proxy codes, JWT veri
 ## Modes & scopes
 
 - `/mcp/readonly` → read tools only.
-- `/mcp/readwrite` → requires `read` **and** `write` scopes.
-- `/mcp` (auto) → readwrite only if `write` scope **and** RSR-admin; else fails closed to read-only.
-- Writes pass a fail-closed allowlist (model ▸ operation ▸ field; delete ⇒ RSR admin; bulk bounded).
+- `/mcp` (auto) → readwrite only if `write` scope **and** (RSR-admin **or** active group leader); else fails
+  closed to read-only. Group leaders get `rock_ministry`/`rock_roster` writes for the groups they lead only;
+  `rock_people`/`rock_write`/workflow writes stay admin-only.
+- Writes pass a fail-closed allowlist (model ▸ operation ▸ field; per-model tier: admin vs group-leader;
+  bulk bounded).
 
 ## Best practice
 

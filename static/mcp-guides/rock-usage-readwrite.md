@@ -59,6 +59,15 @@ Use these rules before calling any tool:
 | `addAttendance` | **Write** | Record attendance for a person in a group |
 | `updateServingRoster` | **Write** | Update a serving roster member's role or status |
 
+### rock_roster (Group Scheduler)
+
+| Action | Mode | Description |
+|---|---|---|
+| `rosterOptions` | Read | List a group's serving roles (locations) and services (schedules) |
+| `viewRoster` | Read | View a date's roster, grouped by service → role → volunteers |
+| `schedule` | **Write** | Assign a volunteer to a role/service/date (pending unless `confirmed: true`) |
+| `unschedule` | **Write** | Remove or inactivate a volunteer's assignment |
+
 ### rock_report
 
 | Action | Description |
@@ -205,6 +214,10 @@ Additional safety rules:
 - **Attendance and group membership writes** should use exact IDs or high-confidence discovery results.
 - **Bulk mutations** (`rock_write` `bulkPatch`) are limited to a maximum of **25 items** at a time.
 - **Audit logging**: every successful write is logged with the tool, action, target, reason, and outcome.
+- **Leader-scoped writes**: a non-admin who leads one or more groups may use `rock_ministry` and
+  `rock_roster` writes only for the groups they lead. `rock_people` writes, `rock_write`, and
+  workflow/connection writes remain **admin-only**, regardless of leadership. Leader-only callers
+  (not staff/admin) also lose `rock_report` and financial `rock_entity` access.
 
 ### Write workflow
 
@@ -256,6 +269,17 @@ Additional safety rules:
 - Updates a serving roster member's role or status.
 - Requires exact IDs discovered via `rock_ministry` or `rock_lookup`.
 - Requires `dryRun: false` and `commit: true`.
+
+### Roster (`rock_roster`)
+
+- `schedule`: assigns a volunteer to a serving role (location) and service (schedule) on a date.
+  Resolves person/role/service by ID or by fuzzy name (ambiguity is reported as an error).
+  Defaults to a pending assignment (RSVP `Unknown`); pass `confirmed: true` for RSVP `Yes`.
+- `unschedule`: removes a volunteer's assignment for a role/service/date (deletes the Attendance,
+  falling back to inactivating it if delete is unsupported).
+- Both require exact/resolved IDs, `dryRun: false`, `commit: true`, and a `reason`.
+- Non-admin group leaders may only schedule/unschedule for groups they lead; admins may act on any
+  group.
 
 ### Workflow Transitions (`rock_workflow`)
 

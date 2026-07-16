@@ -50,7 +50,7 @@ To validate changes quickly, prefer `pnpm lint` and `pnpm typecheck` over a full
 
 Two entry paths share the same tool implementations:
 
-- **HTTP (production):** `app/mcp/route.ts`, `app/mcp/readonly/route.ts`, `app/mcp/readwrite/route.ts`
+- **HTTP (production):** `app/mcp/route.ts`, `app/mcp/readonly/route.ts`
   → `src/http/mcp-route.ts` (`handleMcpPost`). Validates the OAuth bearer token, resolves the
   mode, builds a per-request MCP server, dispatches the tool call.
 - **CLI (local dev):** `src/server.ts` — stdio transport, in-memory dev context with admin rights.
@@ -79,16 +79,25 @@ docs/                    reference/history only — do not auto-read (see note a
 ### MCP tools (`src/tools/`)
 
 `rock_usage`, `rock_lookup`, `rock_entity`, `rock_people`, `rock_ministry`, `rock_report`,
-`rock_workflow` (all read or read/write) and `rock_write` (read-write only). Each implements the
-`GatewayTool` interface (`src/tools/types.ts`): `schemaForMode()` returns a Zod schema or `null`
-to hide the tool in a given mode, and `handle()` runs with the injected `OAuthRockContext`.
+`rock_workflow`, `rock_roster` (all read or read/write) and `rock_write` (read-write only). Each
+implements the `GatewayTool` interface (`src/tools/types.ts`): `schemaForMode()` returns a Zod
+schema or `null` to hide the tool in a given mode, and `handle()` runs with the injected
+`OAuthRockContext`.
 
 ### Modes
 
-- `/mcp/readonly` → read-only tools only
-- `/mcp/readwrite` → requires both `read` and `write` scopes
-- `/mcp` → auto: `readwrite` if the user is a Rock admin **and** holds the write scope, else
-  `readonly` (fails closed to read-only on any person-resolution failure)
+Two endpoints:
+
+- `/mcp/readonly` → read-only tools only.
+- `/mcp` → auto: read-write if the token holds the `write` scope **and** the resolved Rock person
+  is either an RSR admin **or** leads at least one group (`ledGroupIds.length > 0`); otherwise
+  read-only. Fails closed to read-only on any person-resolution failure.
+
+Write authorization is tiered within read-write mode: a non-admin group leader may use
+`rock_ministry`/`rock_roster` writes only for groups they lead; `rock_people` writes, `rock_write`,
+and workflow/connection writes stay **admin-only**. Leader-only callers (not staff/admin) also get
+a restricted read surface: `rock_report` is hidden and `rock_entity` blocks financial models
+(`FORBIDDEN_MODEL`).
 
 ### Auth flow
 
@@ -118,7 +127,14 @@ but read it only if explicitly asked — see the note at the top of this file.)
 - Never compare an enum (e.g. `GroupMemberStatus`) to an integer in a v1 OData
   `$filter` — the EDM type is string and Rock 400s (*"incompatible types
   'Edm.String' and 'Edm.Int32'"*). Filter by ids only and check the enum
-  client-side, accepting both representations (`1` and `'Active'`).
+  client-side, accepting both representations (`1` and `'Active'`). This also applies to
+  `RSVP`/`ScheduledToAttend` below — never put either in a `$filter`.
+- **Group Scheduler / roster** (`rock_roster`): rostering = assigning a volunteer to a serving
+  role (a `Location`) for a service (a `Schedule`) on a date. It is persisted as an
+  `AttendanceOccurrence` (keyed on `GroupId`+`LocationId`+`ScheduleId`+`OccurrenceDate`) plus an
+  `Attendance` (`PersonAliasId`, `ScheduledToAttend=true`, `RSVP`). `SundayDate` is omitted on
+  occurrence create — Rock computes it. RSVP enum: `No=0`, `Yes=1`, `Maybe=2`, `Unknown=3`;
+  `schedule` uses `Unknown` for a pending assignment and `Yes` once confirmed.
 
 ## Environment
 

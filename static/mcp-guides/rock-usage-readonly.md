@@ -50,6 +50,13 @@ Use these rules before calling any tool:
 | `connectGroupHealth` | Analyze connect group health by campus/age group |
 | `leaderCount` | Count distinct leaders across connect groups |
 
+### rock_roster (Group Scheduler)
+
+| Action | Description |
+|---|---|
+| `rosterOptions` | List a group's serving roles (locations) and services (schedules) |
+| `viewRoster` | View a date's roster, grouped by service → role → volunteers |
+
 ### rock_report
 
 | Action | Description |

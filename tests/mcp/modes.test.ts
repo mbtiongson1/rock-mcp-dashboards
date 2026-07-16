@@ -1,15 +1,21 @@
 import { describe, it, expect } from 'vitest';
 // @ts-ignore
-import { resolveMode, EndpointKind, ScopeError, AdminRequiredError } from '../../src/mcp/modes.js';
+import { resolveMode, ScopeError } from '../../src/mcp/modes.js';
 // @ts-ignore
 import { OAuthRockContext } from '../../src/http/oauth.js';
 
 describe('Endpoint Mode Resolution', () => {
-  const baseContext = (scopes: string[], isRsrAdmin = false, isStaff = false): Partial<OAuthRockContext> => ({
+  const baseContext = (
+    scopes: string[],
+    isRsrAdmin = false,
+    isStaff = false,
+    ledGroupIds: number[] = []
+  ): Partial<OAuthRockContext> => ({
     scopes: new Set(scopes as any),
     rockUser: {
       isRsrAdmin,
       isStaff,
+      ledGroupIds,
     },
   }) as any;
 
@@ -24,34 +30,13 @@ describe('Endpoint Mode Resolution', () => {
     expect(() => resolveMode('readonly', ctx as OAuthRockContext)).toThrow('Missing scope: read');
   });
 
-  it('should resolve to readwrite for readwrite endpoint with read & write scope (admin)', () => {
-    const ctx = baseContext(['read', 'write'], true);
-    const mode = resolveMode('readwrite', ctx as OAuthRockContext);
-    expect(mode).toBe('readwrite');
-  });
-
-  it('should throw for readwrite endpoint if write scope is missing (admin)', () => {
-    const ctx = baseContext(['read'], true);
-    expect(() => resolveMode('readwrite', ctx as OAuthRockContext)).toThrow('Missing scope: write');
-  });
-
-  it('should throw AdminRequiredError on readwrite for a non-admin staff worker (even with write scope)', () => {
-    const ctx = baseContext(['read', 'write'], false, true);
-    expect(() => resolveMode('readwrite', ctx as OAuthRockContext)).toThrow(AdminRequiredError);
-  });
-
-  it('should throw AdminRequiredError on readwrite for a non-admin regardless of scope', () => {
-    const ctx = baseContext(['read'], false, true);
-    expect(() => resolveMode('readwrite', ctx as OAuthRockContext)).toThrow(AdminRequiredError);
-  });
-
   it('should resolve to readonly for auto endpoint if user lacks write scope', () => {
     const ctx = baseContext(['read'], true);
     const mode = resolveMode('mcp', ctx as OAuthRockContext);
     expect(mode).toBe('readonly');
   });
 
-  it('should resolve to readonly for auto endpoint if user has write scope but is not RSR admin', () => {
+  it('should resolve to readonly for auto endpoint if user has write scope but is not RSR admin and leads no groups', () => {
     const ctx = baseContext(['read', 'write'], false);
     const mode = resolveMode('mcp', ctx as OAuthRockContext);
     expect(mode).toBe('readonly');
@@ -63,13 +48,27 @@ describe('Endpoint Mode Resolution', () => {
     expect(mode).toBe('readwrite');
   });
 
-  it('should throw ScopeError (not generic Error) for missing write scope on readwrite endpoint (admin)', () => {
-    const ctx = baseContext(['read'], true);
-    expect(() => resolveMode('readwrite', ctx as OAuthRockContext)).toThrow(ScopeError);
+  it('should resolve to readwrite for auto endpoint if non-admin user leads a group and has write scope', () => {
+    const ctx = baseContext(['read', 'write'], false, false, [5]);
+    const mode = resolveMode('mcp', ctx as OAuthRockContext);
+    expect(mode).toBe('readwrite');
   });
 
-  it('should throw ScopeError with correct message (admin)', () => {
-    const ctx = baseContext(['read'], true);
-    expect(() => resolveMode('readwrite', ctx as OAuthRockContext)).toThrow('Missing scope: write');
+  it('should resolve to readonly for auto endpoint if leader lacks write scope', () => {
+    const ctx = baseContext(['read'], false, false, [5]);
+    const mode = resolveMode('mcp', ctx as OAuthRockContext);
+    expect(mode).toBe('readonly');
+  });
+
+  it('should resolve to readonly for auto endpoint for plain staff (no leadership) even with write scope', () => {
+    const ctx = baseContext(['read', 'write'], false, true, []);
+    const mode = resolveMode('mcp', ctx as OAuthRockContext);
+    expect(mode).toBe('readonly');
+  });
+
+  it('should throw ScopeError for missing read scope on auto endpoint', () => {
+    const ctx = baseContext([], false, false, [5]);
+    expect(() => resolveMode('mcp', ctx as OAuthRockContext)).toThrow(ScopeError);
+    expect(() => resolveMode('mcp', ctx as OAuthRockContext)).toThrow('Missing scope: read');
   });
 });

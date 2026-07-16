@@ -13,8 +13,10 @@ import { escapeODataString } from '../rock/query.js';
 const ENTITY_SEARCH_V2_ENDPOINT = '/api/v2/models/entitysearches/search';
 
 /**
- * Allowlisted models for raw search/count-by-where operations.
- * searchByKey, get, and attributeValues are not subject to this allowlist.
+ * Allowlisted models for raw search/count-by-where operations (enforced for everyone).
+ * For restricted (leader-only) callers, this allowlist is additionally enforced on
+ * get/searchByKey/attributeValues (see the restricted-read guard at the top of `handle`).
+ * Staff/admin callers are not subject to that additional enforcement.
  */
 const READ_MODEL_ALLOWLIST = new Set([
   'people',
@@ -36,6 +38,17 @@ const READ_MODEL_ALLOWLIST = new Set([
   'locations',
   'notes',
   'persons',
+]);
+
+/**
+ * Financial / giving models a restricted (leader-only) caller may never read. The
+ * READ_MODEL_ALLOWLIST already excludes these, but this denylist yields a clear FORBIDDEN_MODEL
+ * error and is defense-in-depth. Matched together with a `startsWith('financial')` check.
+ */
+const SENSITIVE_READ_MODELS = new Set([
+  'financialtransactions', 'financialaccounts', 'financialpledges',
+  'financialscheduledtransactions', 'financialbatches', 'financialpersonbankaccounts',
+  'financialtransactiondetails', 'financialpaymentdetails', 'financialgateways',
 ]);
 
 const MODEL_DESCRIPTION =
@@ -175,7 +188,11 @@ function projectPeopleSummary(record: any): any {
 export const rockEntityTool: GatewayTool = {
   name: 'rock_entity',
   title: 'Rock Entity Client',
-  schemaForMode(_mode: McpMode, _scopes: Set<McpScope>): z.ZodTypeAny | null {
+  schemaForMode(
+    _mode: McpMode,
+    _scopes: Set<McpScope>,
+    _caps: { isAdmin: boolean; isStaffOrAdmin: boolean }
+  ): z.ZodTypeAny | null {
     return rockEntitySchema;
   },
   descriptionForMode(_mode: McpMode): string {
@@ -190,6 +207,42 @@ export const rockEntityTool: GatewayTool = {
         code: 'MISSING_CLIENT',
         message: 'Rock client is not initialized in request context.',
       });
+    }
+
+    // Restricted read tier: leader-only users (admitted but neither staff nor admin) get a
+    // directory/roster read surface only — no financial reads, and the READ_MODEL_ALLOWLIST is
+    // enforced on EVERY action (get/searchByKey/attributeValues normally bypass it). Fail closed:
+    // a missing rockUser is treated as restricted.
+    const isStaffOrAdmin = !!(ctx.rockUser && (ctx.rockUser.isRsrAdmin || ctx.rockUser.isStaff));
+    if (!isStaffOrAdmin) {
+      const requestedModel = 'model' in parsed ? parsed.model : undefined;
+
+      // Model-less saved search (searchByKey without a model) cannot be allowlist-checked and could
+      // expose financial/PII data → deny for restricted users (fail closed).
+      if (parsed.action === 'searchByKey' && !requestedModel) {
+        return formatResponse(parsed.action, ctx, null, {
+          code: 'FORBIDDEN_MODEL',
+          message: 'Saved searches without an explicit model are not available at your access level.',
+        });
+      }
+
+      if (requestedModel) {
+        const normalized = normalizeModelName(requestedModel);
+        // (b) financial denylist — clear, specific error, defense-in-depth over the allowlist.
+        if (normalized.startsWith('financial') || SENSITIVE_READ_MODELS.has(normalized)) {
+          return formatResponse(parsed.action, ctx, null, {
+            code: 'FORBIDDEN_MODEL',
+            message: `Reads of model '${requestedModel}' are restricted at your access level.`,
+          });
+        }
+        // (a) allowlist on all actions for restricted users.
+        if (!READ_MODEL_ALLOWLIST.has(normalized)) {
+          return formatResponse(parsed.action, ctx, null, {
+            code: 'FORBIDDEN_MODEL',
+            message: `Reads of model '${requestedModel}' are not permitted at your access level.`,
+          });
+        }
+      }
     }
 
     if (parsed.action === 'get') {

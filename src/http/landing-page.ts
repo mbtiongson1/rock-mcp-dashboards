@@ -683,7 +683,7 @@ export function getLandingPageHtml(options: {
             <span class="method-badge">POST</span>
           </div>
           <div class="endpoint-desc">
-            Detects user status automatically. Upgrades to readwrite mode for admins with write scopes; defaults to readonly.
+            Detects user status automatically. Upgrades to read-write mode for admins or active group leaders with write scopes; defaults to readonly.
           </div>
           <div class="endpoint-path-container">
             <span class="endpoint-path" id="url-mcp">${escapeHtml(serverUrl)}/mcp</span>
@@ -698,7 +698,7 @@ export function getLandingPageHtml(options: {
             </div>
             <div class="meta-row">
               <span class="meta-label">Write Access</span>
-              <span class="meta-val">RSR Admins Only</span>
+              <span class="meta-val">Admins &amp; Group Leaders (Authorized)</span>
             </div>
           </div>
         </div>
@@ -725,32 +725,6 @@ export function getLandingPageHtml(options: {
             <div class="meta-row">
               <span class="meta-label">Write Access</span>
               <span class="meta-val">Disabled</span>
-            </div>
-          </div>
-        </div>
-
-        <div class="endpoint-card">
-          <div class="card-header">
-            <span class="endpoint-mode">Read-Write Gateway</span>
-            <span class="method-badge">POST</span>
-          </div>
-          <div class="endpoint-desc">
-            Explicitly registers read and write tools. Requires OAuth client write credentials. Runs operations as the user.
-          </div>
-          <div class="endpoint-path-container">
-            <span class="endpoint-path" id="url-readwrite">${escapeHtml(serverUrl)}/mcp/readwrite</span>
-            <button class="btn-copy" data-copy="url-readwrite" title="Copy URL">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-            </button>
-          </div>
-          <div class="endpoint-meta">
-            <div class="meta-row">
-              <span class="meta-label">Min Scope</span>
-              <span class="meta-val">read + write</span>
-            </div>
-            <div class="meta-row">
-              <span class="meta-label">Write Access</span>
-              <span class="meta-val">Enabled (Authorized)</span>
             </div>
           </div>
         </div>
@@ -851,7 +825,7 @@ export function getLandingPageHtml(options: {
             <li><code>/.well-known/oauth-protected-resource</code> advertises this MCP resource and supported scopes.</li>
             <li><code>/.well-known/oauth-authorization-server</code> mirrors the Auth0 metadata used for login and token issuance.</li>
           </ul>
-          <p>Access tokens issued by the login flow must contain at least the <code>read</code> scope. To perform updates/writes via <code>/mcp/readwrite</code> or <code>/mcp</code>, the signed-in user also needs the <code>write</code> scope and Rock authorization for the targeted entity.</p>
+          <p>Access tokens issued by the login flow must contain at least the <code>read</code> scope. To perform updates/writes via <code>/mcp</code>, the signed-in user also needs the <code>write</code> scope and Rock authorization for the targeted entity (an RSR admin, or a group leader acting on the groups they lead).</p>
         </div>
       </div>
     </section>
@@ -918,7 +892,7 @@ export function getLandingPageHtml(options: {
 
     document.addEventListener('DOMContentLoaded', () => {
       // Update copyable URLs dynamically with current hostname
-      ['url-mcp', 'url-readonly', 'url-readwrite'].forEach(id => {
+      ['url-mcp', 'url-readonly'].forEach(id => {
         const el = document.getElementById(id);
         if (el) {
           el.innerText = el.innerText.replace('${serverUrl}', window.location.origin);

@@ -17,6 +17,7 @@ describe('rock_entity tool', () => {
     mockCtx = {
       mode: 'readonly',
       rockClient: mockClient,
+      rockUser: { isRsrAdmin: true, isStaff: true, ledGroupIds: [] },
     } as unknown as OAuthRockContext;
   });
 
@@ -897,6 +898,125 @@ describe('rock_entity tool', () => {
       expect(response.error?.code).toBe('SEARCH_BY_KEY_ERROR');
       // No availableSearchKeys since discovery failed, but should not have thrown
       expect(response.error?.availableSearchKeys).toBeUndefined();
+    });
+  });
+
+  describe('restricted read guard for leader-only users', () => {
+    let restrictedCtx: any;
+
+    beforeEach(() => {
+      restrictedCtx = {
+        mode: 'readonly',
+        rockClient: mockClient,
+        rockUser: { isRsrAdmin: false, isStaff: false, ledGroupIds: [5] },
+      } as unknown as OAuthRockContext;
+    });
+
+    it('should deny get on a financial model for leader-only users', async () => {
+      const result = await rockEntityTool.handle(
+        { action: 'get', model: 'financialtransactions', id: 1 },
+        null,
+        restrictedCtx
+      );
+
+      expect(mockClient.get).not.toHaveBeenCalled();
+      const response = JSON.parse(result.content[0].text!);
+      expect(response.ok).toBe(false);
+      expect(response.error?.code).toBe('FORBIDDEN_MODEL');
+    });
+
+    it('should deny get on a singular financial model name (startsWith catch) for leader-only users', async () => {
+      const result = await rockEntityTool.handle(
+        { action: 'get', model: 'financialtransaction', id: 1 },
+        null,
+        restrictedCtx
+      );
+
+      expect(mockClient.get).not.toHaveBeenCalled();
+      const response = JSON.parse(result.content[0].text!);
+      expect(response.ok).toBe(false);
+      expect(response.error?.code).toBe('FORBIDDEN_MODEL');
+    });
+
+    it('should deny get on a non-allowlisted, non-financial model for leader-only users', async () => {
+      const result = await rockEntityTool.handle(
+        { action: 'get', model: 'benevolencerequests', id: 1 },
+        null,
+        restrictedCtx
+      );
+
+      expect(mockClient.get).not.toHaveBeenCalled();
+      const response = JSON.parse(result.content[0].text!);
+      expect(response.ok).toBe(false);
+      expect(response.error?.code).toBe('FORBIDDEN_MODEL');
+    });
+
+    it('should allow get on an allowlisted model (people) for leader-only users', async () => {
+      mockClient.get.mockResolvedValue({ Id: 1, Name: 'Alex Santos' });
+
+      const result = await rockEntityTool.handle(
+        { action: 'get', model: 'people', id: 1 },
+        null,
+        restrictedCtx
+      );
+
+      expect(mockClient.get).toHaveBeenCalled();
+      const response = JSON.parse(result.content[0].text!);
+      expect(response.ok).toBe(true);
+    });
+
+    it('should deny searchByKey with an explicit financial model for leader-only users', async () => {
+      const result = await rockEntityTool.handle(
+        { action: 'searchByKey', model: 'financialtransactions', searchKey: 'SomeSearch' },
+        null,
+        restrictedCtx
+      );
+
+      expect(mockClient.post).not.toHaveBeenCalled();
+      const response = JSON.parse(result.content[0].text!);
+      expect(response.ok).toBe(false);
+      expect(response.error?.code).toBe('FORBIDDEN_MODEL');
+    });
+
+    it('should deny model-less searchByKey for leader-only users (fail closed)', async () => {
+      const result = await rockEntityTool.handle(
+        { action: 'searchByKey', searchKey: 'SomeSavedSearch' },
+        null,
+        restrictedCtx
+      );
+
+      expect(mockClient.post).not.toHaveBeenCalled();
+      const response = JSON.parse(result.content[0].text!);
+      expect(response.ok).toBe(false);
+      expect(response.error?.code).toBe('FORBIDDEN_MODEL');
+    });
+
+    it('should deny attributeValues on a financial model for leader-only users', async () => {
+      const result = await rockEntityTool.handle(
+        { action: 'attributeValues', model: 'financialaccounts', id: 1 },
+        null,
+        restrictedCtx
+      );
+
+      expect(mockClient.get).not.toHaveBeenCalled();
+      const response = JSON.parse(result.content[0].text!);
+      expect(response.ok).toBe(false);
+      expect(response.error?.code).toBe('FORBIDDEN_MODEL');
+    });
+
+    it('should NOT block staff/admin from reading financial models (leader-only restriction only)', async () => {
+      mockClient.get.mockResolvedValue({ Id: 1, Amount: 100 });
+
+      const result = await rockEntityTool.handle(
+        { action: 'get', model: 'financialtransactions', id: 1 },
+        null,
+        mockCtx // shared mockCtx is staff/admin
+      );
+
+      expect(mockClient.get).toHaveBeenCalled();
+      const response = JSON.parse(result.content[0].text!);
+      expect(response.ok).toBe(true);
+      expect(response.error?.code).not.toBe('FORBIDDEN_MODEL');
     });
   });
 });

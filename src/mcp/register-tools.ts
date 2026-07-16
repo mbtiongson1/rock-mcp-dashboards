@@ -23,8 +23,13 @@ import { AuditLogger } from '../auth/audit.js';
 export function registerGatewayTools(server: McpServer, mode: McpMode, ctx: OAuthRockContext): void {
   const auditLogger = new AuditLogger();
 
+  const caps = {
+    isAdmin: ctx.rockUser.isRsrAdmin,
+    isStaffOrAdmin: ctx.rockUser.isRsrAdmin || ctx.rockUser.isStaff,
+  };
+
   for (const tool of allTools) {
-    const schema = tool.schemaForMode(mode, ctx.scopes);
+    const schema = tool.schemaForMode(mode, ctx.scopes, caps);
     if (!schema) continue;
 
     // Per MCP Apps spec (ext-apps v0.3.0), tools that open an MCP App

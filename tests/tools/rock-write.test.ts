@@ -29,14 +29,14 @@ describe('rock_write tool', () => {
       },
       rockUser: {
         personId: 456,
-        isRsrAdmin: false,
+        isRsrAdmin: true, // most rock_write scenarios below exercise admin-tier models (people/notes/connectionrequests)
       },
-      endpoint: '/mcp/readwrite',
+      endpoint: 'mcp',
     } as unknown as OAuthRockContext;
   });
 
   it('should return null schema in readonly mode', () => {
-    const schema = rockWriteTool.schemaForMode('readonly', new Set(['read']));
+    const schema = rockWriteTool.schemaForMode('readonly', new Set(['read']), { isAdmin: false, isStaffOrAdmin: false });
     expect(schema).toBeNull();
   });
 
@@ -93,7 +93,7 @@ describe('rock_write tool', () => {
     expect(response.error.code).toBe('MODEL_NOT_ALLOWED');
   });
 
-  it('should deny delete to non-admins', async () => {
+  it('should deny delete to non-admins (groupmembers is groupLeader-tier; rock_write does not resolve leadership)', async () => {
     mockCtx.rockUser.isRsrAdmin = false;
     const result = await rockWriteTool.handle(
       { action: 'delete', model: 'groupmembers', id: 123, dryRun: true, reason: 'Test' },
@@ -103,7 +103,7 @@ describe('rock_write tool', () => {
 
     const response = JSON.parse(result.content[0].text!);
     expect(response.ok).toBe(false);
-    expect(response.error.code).toBe('DELETE_REQUIRES_ADMIN');
+    expect(response.error.code).toBe('NOT_GROUP_LEADER');
   });
 
   it('should allow delete to admins', async () => {

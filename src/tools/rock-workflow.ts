@@ -65,8 +65,12 @@ const auditLogger = new AuditLogger();
 export const rockWorkflowTool: GatewayTool = {
   name: 'rock_workflow',
   title: 'Rock Connection & Workflow Manager',
-  schemaForMode(mode: McpMode, scopes: Set<McpScope>): z.ZodTypeAny | null {
-    if (mode !== 'readwrite' || !scopes.has('write')) {
+  schemaForMode(
+    mode: McpMode,
+    scopes: Set<McpScope>,
+    caps: { isAdmin: boolean; isStaffOrAdmin: boolean }
+  ): z.ZodTypeAny | null {
+    if (mode !== 'readwrite' || !scopes.has('write') || !caps.isAdmin) {
       return z.discriminatedUnion('action', [
         z.object({
           action: z.literal('connectionRequests'),

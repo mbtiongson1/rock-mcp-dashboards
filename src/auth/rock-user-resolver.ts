@@ -27,6 +27,14 @@ export interface ResolvedRockUser {
    * via `ROCK_STAFF_ROLE_NAMES`). Admins are treated as staff too.
    */
   isStaff: boolean;
+  /**
+   * Ids of groups this person actively leads (active membership + leader
+   * role), used by later tasks to authorize non-admin leader-scoped writes.
+   * Always present (never `undefined`) — `[]` for admins (who don't need it;
+   * their authority comes from `isRsrAdmin`) and for anyone the lookup fails
+   * to confirm as a leader.
+   */
+  ledGroupIds: number[];
 }
 
 interface CacheEntry<T> {
@@ -130,6 +138,7 @@ export class RockUserResolver {
     const resolved: ResolvedRockUser = {
       isRsrAdmin: false,
       isStaff: false,
+      ledGroupIds: [],
     };
 
     if (person) {
@@ -141,6 +150,9 @@ export class RockUserResolver {
       // Admins are a privilege superset of staff, so skip the extra staff
       // lookups for them and treat them as staff.
       resolved.isStaff = resolved.isRsrAdmin ? true : await this.checkStaff(ctx, person.Id);
+      // Admins override every write via isRsrAdmin, so they don't need their
+      // led-group set — skip the extra lookup for them.
+      resolved.ledGroupIds = resolved.isRsrAdmin ? [] : await this.getLedGroupIds(ctx, person.Id);
     }
 
     // Cache user resolution for 15 minutes
@@ -209,6 +221,41 @@ export class RockUserResolver {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Returns the ids of groups `personId` actively leads (active membership +
+   * leader role), deduped. Uses the user's own forwarded token — there is no
+   * admin API key. The `$filter` scopes by `PersonId` only (never compare the
+   * `GroupMemberStatus` enum inside an OData `$filter` — the EDM type is
+   * string and Rock 400s); active + leader is checked client-side via
+   * {@link isActiveGroupMemberStatus} and `GroupRole?.IsLeader`. Fails closed
+   * to `[]` on any Rock error, which is the safe default for a write gate.
+   */
+  private async getLedGroupIds(ctx: OAuthRockContext, personId: number): Promise<number[]> {
+    const cacheKey = `led-group-ids:${personId}`;
+    const cached = this.getCached<number[]>(cacheKey);
+    if (cached !== null) return cached;
+
+    let ledGroupIds: number[] = [];
+    try {
+      const members = await this.rockClient.get<any[]>(
+        ctx,
+        `/api/GroupMembers?$filter=PersonId eq ${personId}&$expand=GroupRole&$select=GroupId,GroupMemberStatus,GroupRole/IsLeader&$top=200`
+      );
+      const groupIds = new Set<number>();
+      for (const m of members ?? []) {
+        if (isActiveGroupMemberStatus(m.GroupMemberStatus) && m.GroupRole?.IsLeader === true) {
+          groupIds.add(m.GroupId);
+        }
+      }
+      ledGroupIds = Array.from(groupIds);
+    } catch {
+      // Ignore — denied/failed lookups mean "leads nothing" (fail closed)
+    }
+
+    this.setCached(cacheKey, ledGroupIds, 900000);
+    return ledGroupIds;
   }
 
   /** Resolves (and caches) the group Id for a named security role. */
