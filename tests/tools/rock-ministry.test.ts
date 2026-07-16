@@ -471,4 +471,251 @@ describe('rock_ministry tool', () => {
       expect(response.result.totalLeaders).toBe(1);
     });
   });
+
+  describe('leader-scoping (Task C: groupLeader tier wiring)', () => {
+    const LED_GROUP = 50;
+    const OTHER_GROUP = 60;
+
+    function nonAdminLeaderCtx(ledGroupIds: number[]) {
+      mockCtx.mode = 'readwrite';
+      mockCtx.scopes = new Set(['read', 'write']);
+      mockCtx.rockUser = { personId: 123, isRsrAdmin: false, isStaff: false, ledGroupIds };
+    }
+
+    describe('addOrUpdateGroupMember', () => {
+      it('allows a non-admin leader of the target group (reaches preview, not NOT_GROUP_LEADER)', async () => {
+        nonAdminLeaderCtx([LED_GROUP]);
+        mockClient.get.mockResolvedValueOnce([]); // existing GroupMembers check -> none
+
+        const result = await rockMinistryTool.handle(
+          {
+            action: 'addOrUpdateGroupMember',
+            groupId: LED_GROUP,
+            personId: 100,
+            roleId: 5,
+            status: 'Active',
+            dryRun: true,
+            commit: false,
+            reason: 'test',
+          },
+          null,
+          mockCtx
+        );
+
+        const response = JSON.parse(result.content[0].text!);
+        expect(response.ok).toBe(true);
+        expect(response.result.committed).toBe(false);
+      });
+
+      it('denies a non-admin leader of a DIFFERENT group (NOT_GROUP_LEADER, no mutation)', async () => {
+        nonAdminLeaderCtx([OTHER_GROUP]);
+
+        const result = await rockMinistryTool.handle(
+          {
+            action: 'addOrUpdateGroupMember',
+            groupId: LED_GROUP,
+            personId: 100,
+            roleId: 5,
+            status: 'Active',
+            dryRun: false,
+            commit: true,
+            reason: 'test',
+          },
+          null,
+          mockCtx
+        );
+
+        const response = JSON.parse(result.content[0].text!);
+        expect(response.ok).toBe(false);
+        expect(response.error.code).toBe('NOT_GROUP_LEADER');
+        expect(mockClient.post).not.toHaveBeenCalled();
+        expect(mockClient.patch).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('removeGroupMember', () => {
+      it('allows a non-admin leader of the target group, resolved via GroupMember lookup', async () => {
+        nonAdminLeaderCtx([LED_GROUP]);
+        mockClient.get.mockResolvedValueOnce({ Id: 777, GroupId: LED_GROUP, PersonId: 100 });
+
+        const result = await rockMinistryTool.handle(
+          { action: 'removeGroupMember', groupMemberId: 777, dryRun: true, commit: false, reason: 'test' },
+          null,
+          mockCtx
+        );
+
+        const response = JSON.parse(result.content[0].text!);
+        expect(response.ok).toBe(true);
+        expect(response.result.committed).toBe(false);
+        expect(response.result.targetMemberId).toBe(777);
+        expect(mockClient.get).toHaveBeenCalledWith(mockCtx, '/api/GroupMembers/777');
+      });
+
+      it('denies a non-admin leader whose GroupMember lookup resolves to a DIFFERENT group', async () => {
+        nonAdminLeaderCtx([OTHER_GROUP]);
+        mockClient.get.mockResolvedValueOnce({ Id: 777, GroupId: LED_GROUP, PersonId: 100 });
+
+        const result = await rockMinistryTool.handle(
+          { action: 'removeGroupMember', groupMemberId: 777, dryRun: false, commit: true, reason: 'test' },
+          null,
+          mockCtx
+        );
+
+        const response = JSON.parse(result.content[0].text!);
+        expect(response.ok).toBe(false);
+        expect(response.error.code).toBe('NOT_GROUP_LEADER');
+        expect(mockClient.delete).not.toHaveBeenCalled();
+      });
+
+      it('fails closed (denies) when the GroupMember lookup errors, even though caller leads a group', async () => {
+        nonAdminLeaderCtx([LED_GROUP]);
+        mockClient.get.mockRejectedValueOnce(new Error('not found'));
+
+        const result = await rockMinistryTool.handle(
+          { action: 'removeGroupMember', groupMemberId: 777, dryRun: false, commit: true, reason: 'test' },
+          null,
+          mockCtx
+        );
+
+        const response = JSON.parse(result.content[0].text!);
+        expect(response.ok).toBe(false);
+        expect(response.error.code).toBe('NOT_GROUP_LEADER');
+        expect(mockClient.delete).not.toHaveBeenCalled();
+      });
+
+      it('admin is unaffected even when the GroupMember lookup errors', async () => {
+        mockCtx.mode = 'readwrite';
+        mockCtx.scopes = new Set(['read', 'write']);
+        // mockCtx.rockUser retains the default isRsrAdmin:true from beforeEach.
+        mockClient.get.mockRejectedValueOnce(new Error('not found'));
+
+        const result = await rockMinistryTool.handle(
+          { action: 'removeGroupMember', groupMemberId: 777, dryRun: true, commit: false, reason: 'test' },
+          null,
+          mockCtx
+        );
+
+        const response = JSON.parse(result.content[0].text!);
+        expect(response.ok).toBe(true);
+        expect(response.result.committed).toBe(false);
+      });
+    });
+
+    describe('addAttendance', () => {
+      it('allows a non-admin leader of the target group (reaches preview, not NOT_GROUP_LEADER)', async () => {
+        nonAdminLeaderCtx([LED_GROUP]);
+        mockClient.get.mockResolvedValueOnce([{ Id: 5000 }]); // PersonAlias
+        mockClient.get.mockResolvedValueOnce({ Id: LED_GROUP, Name: 'Test Group' }); // Group (no campus)
+        mockClient.get.mockResolvedValueOnce([]); // existing occurrence
+        mockClient.get.mockResolvedValueOnce([]); // existing attendance
+
+        const result = await rockMinistryTool.handle(
+          {
+            action: 'addAttendance',
+            groupId: LED_GROUP,
+            personId: 100,
+            dryRun: true,
+            commit: false,
+            reason: 'test',
+          },
+          null,
+          mockCtx
+        );
+
+        const response = JSON.parse(result.content[0].text!);
+        expect(response.ok).toBe(true);
+        expect(response.result.committed).toBe(false);
+      });
+
+      it('denies a non-admin leader of a DIFFERENT group (NOT_GROUP_LEADER, no mutation)', async () => {
+        nonAdminLeaderCtx([OTHER_GROUP]);
+
+        const result = await rockMinistryTool.handle(
+          {
+            action: 'addAttendance',
+            groupId: LED_GROUP,
+            personId: 100,
+            dryRun: false,
+            commit: true,
+            reason: 'test',
+          },
+          null,
+          mockCtx
+        );
+
+        const response = JSON.parse(result.content[0].text!);
+        expect(response.ok).toBe(false);
+        expect(response.error.code).toBe('NOT_GROUP_LEADER');
+        expect(mockClient.get).not.toHaveBeenCalled();
+        expect(mockClient.post).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('updateServingRoster', () => {
+      it('allows a non-admin leader of the target group, resolved via GroupMember lookup', async () => {
+        nonAdminLeaderCtx([LED_GROUP]);
+        mockClient.get.mockResolvedValueOnce({ Id: 888, GroupId: LED_GROUP, PersonId: 100 });
+
+        const result = await rockMinistryTool.handle(
+          { action: 'updateServingRoster', groupMemberId: 888, status: 'Active', dryRun: true, commit: false, reason: 'test' },
+          null,
+          mockCtx
+        );
+
+        const response = JSON.parse(result.content[0].text!);
+        expect(response.ok).toBe(true);
+        expect(response.result.committed).toBe(false);
+        expect(mockClient.get).toHaveBeenCalledWith(mockCtx, '/api/GroupMembers/888');
+      });
+
+      it('denies a non-admin leader whose GroupMember lookup resolves to a DIFFERENT group', async () => {
+        nonAdminLeaderCtx([OTHER_GROUP]);
+        mockClient.get.mockResolvedValueOnce({ Id: 888, GroupId: LED_GROUP, PersonId: 100 });
+
+        const result = await rockMinistryTool.handle(
+          { action: 'updateServingRoster', groupMemberId: 888, status: 'Active', dryRun: false, commit: true, reason: 'test' },
+          null,
+          mockCtx
+        );
+
+        const response = JSON.parse(result.content[0].text!);
+        expect(response.ok).toBe(false);
+        expect(response.error.code).toBe('NOT_GROUP_LEADER');
+        expect(mockClient.patch).not.toHaveBeenCalled();
+      });
+
+      it('fails closed (denies) when the GroupMember lookup errors, even though caller leads a group', async () => {
+        nonAdminLeaderCtx([LED_GROUP]);
+        mockClient.get.mockRejectedValueOnce(new Error('not found'));
+
+        const result = await rockMinistryTool.handle(
+          { action: 'updateServingRoster', groupMemberId: 888, status: 'Active', dryRun: false, commit: true, reason: 'test' },
+          null,
+          mockCtx
+        );
+
+        const response = JSON.parse(result.content[0].text!);
+        expect(response.ok).toBe(false);
+        expect(response.error.code).toBe('NOT_GROUP_LEADER');
+        expect(mockClient.patch).not.toHaveBeenCalled();
+      });
+
+      it('admin is unaffected even when the GroupMember lookup errors', async () => {
+        mockCtx.mode = 'readwrite';
+        mockCtx.scopes = new Set(['read', 'write']);
+        // mockCtx.rockUser retains the default isRsrAdmin:true from beforeEach.
+        mockClient.get.mockRejectedValueOnce(new Error('not found'));
+
+        const result = await rockMinistryTool.handle(
+          { action: 'updateServingRoster', groupMemberId: 888, status: 'Active', dryRun: true, commit: false, reason: 'test' },
+          null,
+          mockCtx
+        );
+
+        const response = JSON.parse(result.content[0].text!);
+        expect(response.ok).toBe(true);
+        expect(response.result.committed).toBe(false);
+      });
+    });
+  });
 });

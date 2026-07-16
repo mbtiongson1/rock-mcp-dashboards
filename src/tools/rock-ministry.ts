@@ -582,11 +582,15 @@ export const rockMinistryTool: GatewayTool = {
       }
 
       // Perform authorization check BEFORE any rockClient call
+      const targetGroupId = groupId;
+      const callerIsTargetGroupLeader = ctx.rockUser.isRsrAdmin || ctx.rockUser.ledGroupIds.includes(targetGroupId);
       const descriptor = {
         tool: 'rock_ministry',
         action: parsed.action,
         model: 'groupmembers',
         operation: 'create' as const,
+        groupId: targetGroupId,
+        callerIsTargetGroupLeader,
       };
       const authz = authorizeWrite(ctx, descriptor);
       if (!authz.allowed) {
@@ -726,12 +730,31 @@ export const rockMinistryTool: GatewayTool = {
         });
       }
 
-      // Perform authorization check BEFORE any rockClient call
+      // Resolve targetGroupId BEFORE authz. Direct groupId wins; otherwise look up the
+      // GroupMember to read its GroupId. Fail-closed: if the lookup throws, targetGroupId
+      // stays undefined, so a non-admin is denied (`.includes(undefined)` is false) while
+      // an admin still passes via isRsrAdmin.
+      let targetGroupId: number | undefined = groupId;
+      let lookedUpMember: any | undefined;
+      if (targetGroupId === undefined && groupMemberId !== undefined) {
+        try {
+          lookedUpMember = await rockClient.get<any>(ctx, `/api/GroupMembers/${groupMemberId}`);
+          targetGroupId = lookedUpMember?.GroupId;
+        } catch {
+          // Fail closed: leave targetGroupId undefined.
+        }
+      }
+      const callerIsTargetGroupLeader =
+        ctx.rockUser.isRsrAdmin || (targetGroupId !== undefined && ctx.rockUser.ledGroupIds.includes(targetGroupId));
+
+      // Perform authorization check BEFORE any mutation.
       const descriptor = {
         tool: 'rock_ministry',
         action: parsed.action,
         model: 'groupmembers',
         operation: 'delete' as const,
+        groupId: targetGroupId,
+        callerIsTargetGroupLeader,
       };
       const authz = authorizeWrite(ctx, descriptor);
       if (!authz.allowed) {
@@ -752,7 +775,7 @@ export const rockMinistryTool: GatewayTool = {
       }
 
       try {
-        let targetId = groupMemberId;
+        let targetId = groupMemberId ?? lookedUpMember?.Id;
         if (!targetId && groupId && personId) {
           const existing = await rockClient.get<any[]>(ctx, `/api/GroupMembers?$filter=GroupId eq ${groupId} and PersonId eq ${personId}`);
           if (existing && existing.length > 0) {
@@ -830,11 +853,15 @@ export const rockMinistryTool: GatewayTool = {
       }
 
       // Perform authorization check BEFORE any mutation or side effects
+      const targetGroupId = groupId;
+      const callerIsTargetGroupLeader = ctx.rockUser.isRsrAdmin || ctx.rockUser.ledGroupIds.includes(targetGroupId);
       const descriptor = {
         tool: 'rock_ministry',
         action: parsed.action,
         model: 'attendances',
         operation: 'create' as const,
+        groupId: targetGroupId,
+        callerIsTargetGroupLeader,
       };
       const authz = authorizeWrite(ctx, descriptor);
       if (!authz.allowed) {
@@ -1006,6 +1033,19 @@ export const rockMinistryTool: GatewayTool = {
         if (roleId !== undefined) payload.GroupRoleId = roleId;
         if (status !== undefined) payload.GroupMemberStatus = status === 'Active' ? 1 : 0;
 
+        // Resolve targetGroupId via a GroupMember lookup BEFORE authz. Fail-closed: if the
+        // lookup throws, targetGroupId stays undefined, so a non-admin is denied
+        // (`.includes(undefined)` is false) while an admin still passes via isRsrAdmin.
+        let targetGroupId: number | undefined;
+        try {
+          const gm = await rockClient.get<any>(ctx, `/api/GroupMembers/${groupMemberId}`);
+          targetGroupId = gm?.GroupId;
+        } catch {
+          // Fail closed: leave targetGroupId undefined.
+        }
+        const callerIsTargetGroupLeader =
+          ctx.rockUser.isRsrAdmin || (targetGroupId !== undefined && ctx.rockUser.ledGroupIds.includes(targetGroupId));
+
         // Perform authorization check BEFORE mutation, even for dry-runs
         const descriptor = {
           tool: 'rock_ministry',
@@ -1013,6 +1053,8 @@ export const rockMinistryTool: GatewayTool = {
           model: 'groupmembers',
           operation: 'patch' as const,
           fields: Object.keys(payload),
+          groupId: targetGroupId,
+          callerIsTargetGroupLeader,
         };
         const authz = authorizeWrite(ctx, descriptor);
         if (!authz.allowed) {
