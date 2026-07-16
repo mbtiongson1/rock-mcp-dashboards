@@ -599,6 +599,25 @@ describe('rock_ministry tool', () => {
         expect(response.ok).toBe(true);
         expect(response.result.committed).toBe(false);
       });
+
+      it('denies the mixed-param bypass: a foreign groupMemberId paired with a led groupId', async () => {
+        // Bypass attempt: caller leads LED_GROUP and pairs their own groupId with a groupMemberId
+        // that actually belongs to OTHER_GROUP. Authz must use the member's REAL group (OTHER_GROUP),
+        // not the supplied groupId, so the delete is denied and never executes.
+        nonAdminLeaderCtx([LED_GROUP]);
+        mockClient.get.mockResolvedValueOnce({ Id: 500, GroupId: OTHER_GROUP, PersonId: 100 });
+
+        const result = await rockMinistryTool.handle(
+          { action: 'removeGroupMember', groupMemberId: 500, groupId: LED_GROUP, dryRun: false, commit: true, reason: 'test' },
+          null,
+          mockCtx
+        );
+
+        const response = JSON.parse(result.content[0].text!);
+        expect(response.ok).toBe(false);
+        expect(response.error.code).toBe('NOT_GROUP_LEADER');
+        expect(mockClient.delete).not.toHaveBeenCalled();
+      });
     });
 
     describe('addAttendance', () => {

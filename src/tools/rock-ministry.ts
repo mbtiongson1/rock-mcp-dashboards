@@ -730,19 +730,28 @@ export const rockMinistryTool: GatewayTool = {
         });
       }
 
-      // Resolve targetGroupId BEFORE authz. Direct groupId wins; otherwise look up the
-      // GroupMember to read its GroupId. Fail-closed: if the lookup throws, targetGroupId
-      // stays undefined, so a non-admin is denied (`.includes(undefined)` is false) while
-      // an admin still passes via isRsrAdmin.
-      let targetGroupId: number | undefined = groupId;
+      // Resolve targetGroupId BEFORE authz. When groupMemberId is provided, the member's
+      // ACTUAL GroupId is the authoritative target for authz — look it up and use it
+      // regardless of any groupId the caller also passed. This prevents a leader-scope
+      // bypass: a caller could otherwise pass a groupId they lead alongside a
+      // groupMemberId belonging to a DIFFERENT group and have authz check the wrong
+      // group while the delete targets the real one. Only fall back to the raw groupId
+      // when no groupMemberId was given (the group+person lookup path below is safe
+      // because it's constrained to that group+person). Fail-closed: if the lookup
+      // throws or the member doesn't exist, targetGroupId stays undefined, so a
+      // non-admin is denied (`.includes(undefined)` is false) while an admin still
+      // passes via isRsrAdmin.
+      let targetGroupId: number | undefined;
       let lookedUpMember: any | undefined;
-      if (targetGroupId === undefined && groupMemberId !== undefined) {
+      if (groupMemberId !== undefined) {
         try {
           lookedUpMember = await rockClient.get<any>(ctx, `/api/GroupMembers/${groupMemberId}`);
           targetGroupId = lookedUpMember?.GroupId;
         } catch {
           // Fail closed: leave targetGroupId undefined.
         }
+      } else {
+        targetGroupId = groupId;
       }
       const callerIsTargetGroupLeader =
         ctx.rockUser.isRsrAdmin || (targetGroupId !== undefined && ctx.rockUser.ledGroupIds.includes(targetGroupId));
