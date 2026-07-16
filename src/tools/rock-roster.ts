@@ -4,6 +4,11 @@ import { McpMode, McpScope } from '../mcp/modes.js';
 import { OAuthRockContext } from '../http/oauth.js';
 import { formatResponse } from './formatter.js';
 import { RockClient } from '../rock/client.js';
+import { AuditLogger } from '../auth/audit.js';
+import { authorizeWrite } from '../auth/authorization.js';
+import { quoteODataString } from '../rock/query.js';
+
+const auditLogger = new AuditLogger();
 
 // Rock RSVP enum: No=0, Yes=1, Maybe=2, Unknown=3. schedule() uses Unknown(3) for pending and Yes(1) for
 // confirmed; unschedule() inactivation uses No(0). VERIFY the pending value against a real scheduled-but-
@@ -12,11 +17,9 @@ const RSVP_NO = 0;
 const RSVP_YES = 1;
 const RSVP_MAYBE = 2;
 const RSVP_UNKNOWN = 3;
-// Referenced here so the constants document the full enum even though only some
-// values are used by the (stubbed) write actions today.
+// RSVP_NO is only referenced by the (stubbed) unschedule action today; keep it
+// documented in the enum even though it has no live call site yet.
 void RSVP_NO;
-void RSVP_YES;
-void RSVP_UNKNOWN;
 
 const RSVP_LABELS: Record<number, string> = {
   [RSVP_NO]: 'No',
@@ -26,6 +29,9 @@ const RSVP_LABELS: Record<number, string> = {
 };
 
 function rsvpLabel(value: unknown): string {
+  // Guard null/undefined BEFORE Number() coercion: Number(null) === 0, which would
+  // otherwise misreport an unset RSVP as 'No' instead of 'Unknown'.
+  if (value == null) return 'Unknown';
   const numeric = typeof value === 'number' ? value : Number(value);
   return RSVP_LABELS[numeric] ?? 'Unknown';
 }
@@ -172,6 +178,213 @@ function nextDayIso(date: string): string {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+interface ResolveErrorResult {
+  code: string;
+  message: string;
+  details?: unknown;
+}
+
+type ResolvePersonResult = { personAliasId: number } | { error: ResolveErrorResult };
+type ResolveRoleResult = { locationId: number } | { error: ResolveErrorResult };
+type ResolveServiceResult = { scheduleId: number } | { error: ResolveErrorResult };
+type ResolveScheduleTargetResult =
+  | { personAliasId: number; locationId: number; scheduleId: number }
+  | { error: ResolveErrorResult };
+
+/**
+ * Resolve a volunteer to a PersonAliasId. Exactly one of personAliasId/personId/personName
+ * is expected; personAliasId wins if given. Reusable by unschedule (B4).
+ */
+async function resolvePerson(
+  rockClient: RockClient,
+  ctx: OAuthRockContext,
+  input: { personAliasId?: number; personId?: number; personName?: string }
+): Promise<ResolvePersonResult> {
+  const { personAliasId, personId, personName } = input;
+
+  if (personAliasId) {
+    return { personAliasId };
+  }
+
+  if (personId) {
+    try {
+      const person = await rockClient.get<any>(ctx, `/api/People/${personId}`);
+      if (person && person.PrimaryAliasId) {
+        return { personAliasId: person.PrimaryAliasId };
+      }
+    } catch {
+      // Fall through to the PersonAlias lookup below.
+    }
+    const aliases = await rockClient.get<any[]>(ctx, `/api/PersonAlias?$filter=PersonId eq ${personId}`);
+    if (aliases && aliases.length > 0) {
+      return { personAliasId: aliases[0].Id };
+    }
+    return {
+      error: { code: 'PERSON_NOT_FOUND', message: `Could not resolve PersonAlias for Person ID ${personId}.` },
+    };
+  }
+
+  if (personName) {
+    // Mirrors rock-people.ts `find`'s v1 fallback name-search shape: split into
+    // first/last tokens when possible for a tighter match.
+    const parts = personName.trim().split(/\s+/);
+    let odataFilter: string;
+    if (parts.length >= 2) {
+      const first = parts[0];
+      const last = parts.slice(1).join(' ');
+      odataFilter =
+        `((substringof(${quoteODataString(first)}, NickName) eq true) or (substringof(${quoteODataString(first)}, FirstName) eq true)) and (substringof(${quoteODataString(last)}, LastName) eq true)`;
+    } else {
+      odataFilter = `(substringof(${quoteODataString(personName)}, NickName) eq true) or (substringof(${quoteODataString(personName)}, LastName) eq true)`;
+    }
+    const matches = await rockClient.get<any[]>(ctx, `/api/People?$filter=${encodeURIComponent(odataFilter)}&$top=10`);
+
+    if (!matches || matches.length === 0) {
+      return { error: { code: 'PERSON_NOT_FOUND', message: `No person found matching '${personName}'.` } };
+    }
+    if (matches.length > 1) {
+      return {
+        error: {
+          code: 'PERSON_AMBIGUOUS',
+          message: `Multiple people match '${personName}'. Pass personId or personAliasId to disambiguate.`,
+          details: {
+            candidates: matches.map((p: any) => ({
+              personId: p.Id,
+              name: `${p.NickName || p.FirstName} ${p.LastName}`,
+            })),
+          },
+        },
+      };
+    }
+
+    const person = matches[0];
+    if (person.PrimaryAliasId) {
+      return { personAliasId: person.PrimaryAliasId };
+    }
+    const aliases = await rockClient.get<any[]>(ctx, `/api/PersonAlias?$filter=PersonId eq ${person.Id}`);
+    if (aliases && aliases.length > 0) {
+      return { personAliasId: aliases[0].Id };
+    }
+    return { error: { code: 'PERSON_NOT_FOUND', message: `Could not resolve PersonAlias for '${personName}'.` } };
+  }
+
+  return {
+    error: {
+      code: 'PERSON_INPUT_REQUIRED',
+      message: 'One of personAliasId, personId, or personName is required.',
+    },
+  };
+}
+
+/** Resolve a serving role (GroupLocation) to a locationId. `roles` is only needed when matching by name. */
+function resolveRole(locationId: number | undefined, roleName: string | undefined, roles: RoleOption[] | null): ResolveRoleResult {
+  if (locationId) {
+    return { locationId };
+  }
+  if (roleName) {
+    const available = roles || [];
+    const matches = available.filter((r) => r.name && r.name.toLowerCase() === roleName.toLowerCase());
+    if (matches.length === 0) {
+      return {
+        error: {
+          code: 'ROLE_UNRESOLVED',
+          message: `No serving role matching '${roleName}' was found for this group.`,
+          details: { availableRoles: available.map((r) => r.name) },
+        },
+      };
+    }
+    if (matches.length > 1) {
+      return {
+        error: {
+          code: 'ROLE_AMBIGUOUS',
+          message: `Multiple serving roles match '${roleName}'.`,
+          details: { matches: matches.map((r) => ({ locationId: r.locationId, name: r.name })) },
+        },
+      };
+    }
+    return { locationId: matches[0].locationId };
+  }
+  return { error: { code: 'ROLE_INPUT_REQUIRED', message: 'One of locationId or roleName is required.' } };
+}
+
+/** Resolve a service (Schedule) to a scheduleId. `services` is only needed when matching by name. */
+function resolveService(
+  scheduleId: number | undefined,
+  serviceName: string | undefined,
+  services: ServiceOption[] | null
+): ResolveServiceResult {
+  if (scheduleId) {
+    return { scheduleId };
+  }
+  if (serviceName) {
+    const available = services || [];
+    const matches = available.filter((s) => s.name && s.name.toLowerCase() === serviceName.toLowerCase());
+    if (matches.length === 0) {
+      return {
+        error: {
+          code: 'SERVICE_UNRESOLVED',
+          message: `No service matching '${serviceName}' was found for this group.`,
+          details: { availableServices: available.map((s) => s.name) },
+        },
+      };
+    }
+    if (matches.length > 1) {
+      return {
+        error: {
+          code: 'SERVICE_AMBIGUOUS',
+          message: `Multiple services match '${serviceName}'.`,
+          details: { matches: matches.map((s) => ({ scheduleId: s.scheduleId, name: s.name })) },
+        },
+      };
+    }
+    return { scheduleId: matches[0].scheduleId };
+  }
+  return { error: { code: 'SERVICE_INPUT_REQUIRED', message: 'One of scheduleId or serviceName is required.' } };
+}
+
+/**
+ * Resolve person + role + service inputs to concrete ids for `schedule`/`unschedule`.
+ * Read-only (may run before authz per plan). Reusable by unschedule (B4).
+ */
+async function resolveScheduleTarget(
+  rockClient: RockClient,
+  ctx: OAuthRockContext,
+  groupId: number,
+  input: {
+    personAliasId?: number;
+    personId?: number;
+    personName?: string;
+    locationId?: number;
+    roleName?: string;
+    scheduleId?: number;
+    serviceName?: string;
+  }
+): Promise<ResolveScheduleTargetResult> {
+  const personResult = await resolvePerson(rockClient, ctx, input);
+  if ('error' in personResult) return personResult;
+
+  let roles: RoleOption[] | null = null;
+  let services: ServiceOption[] | null = null;
+  const needsGroupRosterOptions = !input.locationId || !input.scheduleId;
+  if (needsGroupRosterOptions) {
+    const fetched = await fetchRolesAndServices(rockClient, ctx, groupId);
+    roles = fetched.roles;
+    services = fetched.services;
+  }
+
+  const roleResult = resolveRole(input.locationId, input.roleName, roles);
+  if ('error' in roleResult) return roleResult;
+
+  const serviceResult = resolveService(input.scheduleId, input.serviceName, services);
+  if ('error' in serviceResult) return serviceResult;
+
+  return {
+    personAliasId: personResult.personAliasId,
+    locationId: roleResult.locationId,
+    scheduleId: serviceResult.scheduleId,
+  };
+}
+
 export const rockRosterTool: GatewayTool = {
   name: 'rock_roster',
   title: 'Rock Group Scheduler Roster',
@@ -284,8 +497,256 @@ export const rockRosterTool: GatewayTool = {
       }
     }
 
-    if (parsed.action === 'schedule' || parsed.action === 'unschedule') {
-      // WRITE logic implemented in a later task (B3/B4). Stubbed here so the schema
+    if (parsed.action === 'schedule') {
+      const {
+        groupId,
+        personAliasId,
+        personId,
+        personName,
+        locationId,
+        roleName,
+        scheduleId,
+        serviceName,
+        date,
+        confirmed,
+        dryRun,
+        commit,
+        reason,
+      } = parsed;
+
+      // 1. Inline mode/scope gate (mirrors rock-ministry's addAttendance).
+      if (ctx.mode !== 'readwrite' || !ctx.scopes.has('write')) {
+        return formatResponse(parsed.action, ctx, null, {
+          code: 'UNAUTHORIZED',
+          message: 'Write actions disallowed in readonly mode.',
+        });
+      }
+
+      // 2. Resolve person/role/service → ids. These are read-only lookups, so
+      // resolution failures (not-found/ambiguous) may run before authz.
+      const resolved = await resolveScheduleTarget(rockClient, ctx, groupId, {
+        personAliasId,
+        personId,
+        personName,
+        locationId,
+        roleName,
+        scheduleId,
+        serviceName,
+      });
+      if ('error' in resolved) {
+        return formatResponse(parsed.action, ctx, null, resolved.error);
+      }
+      const resolvedPersonAliasId = resolved.personAliasId;
+      const resolvedLocationId = resolved.locationId;
+      const resolvedScheduleId = resolved.scheduleId;
+
+      // 3. Compute leadership + authorize BEFORE any mutation.
+      const callerIsTargetGroupLeader = ctx.rockUser.isRsrAdmin || ctx.rockUser.ledGroupIds.includes(groupId);
+
+      const occurrenceAuthz = authorizeWrite(ctx, {
+        tool: 'rock_roster',
+        action: parsed.action,
+        model: 'attendanceoccurrences',
+        operation: 'create',
+        fields: ['GroupId', 'OccurrenceDate', 'ScheduleId', 'LocationId'],
+        groupId,
+        callerIsTargetGroupLeader,
+      });
+      if (!occurrenceAuthz.allowed) {
+        auditLogger.log(ctx, {
+          tool: 'rock_roster',
+          action: parsed.action,
+          target: { model: 'attendanceoccurrences', id: groupId },
+          dryRun,
+          commit,
+          reason,
+          outcome: 'denied',
+          errorCode: occurrenceAuthz.code,
+        });
+        return formatResponse(parsed.action, ctx, null, {
+          code: occurrenceAuthz.code || 'AUTHORIZATION_DENIED',
+          message: occurrenceAuthz.reason || 'Authorization denied.',
+        });
+      }
+
+      let campusId: number | null = null;
+      try {
+        const group = await rockClient.get<any>(ctx, `/api/Groups/${groupId}`);
+        if (group && group.CampusId) campusId = group.CampusId;
+      } catch {
+        // Ignore; campusId may remain null (best-effort, mirrors addAttendance).
+      }
+
+      const attendanceFields = [
+        'OccurrenceId',
+        'PersonAliasId',
+        'ScheduledToAttend',
+        'RSVP',
+        'DidAttend',
+        'StartDateTime',
+        ...(campusId ? ['CampusId'] : []),
+      ];
+      const attendanceAuthz = authorizeWrite(ctx, {
+        tool: 'rock_roster',
+        action: parsed.action,
+        model: 'attendances',
+        operation: 'create',
+        fields: attendanceFields,
+        groupId,
+        callerIsTargetGroupLeader,
+      });
+      if (!attendanceAuthz.allowed) {
+        auditLogger.log(ctx, {
+          tool: 'rock_roster',
+          action: parsed.action,
+          target: { model: 'attendances', id: groupId },
+          dryRun,
+          commit,
+          reason,
+          outcome: 'denied',
+          errorCode: attendanceAuthz.code,
+        });
+        return formatResponse(parsed.action, ctx, null, {
+          code: attendanceAuthz.code || 'AUTHORIZATION_DENIED',
+          message: attendanceAuthz.reason || 'Authorization denied.',
+        });
+      }
+
+      const formattedDate = `${date}T00:00:00`;
+      const shouldMutate = commit && !dryRun;
+
+      try {
+        // 4. Get-or-create the AttendanceOccurrence keyed on {GroupId, LocationId, ScheduleId, OccurrenceDate}.
+        let occurrenceId: number | null = null;
+        try {
+          const existingOcc = await rockClient.get<any[]>(
+            ctx,
+            `/api/AttendanceOccurrences?$filter=GroupId eq ${groupId} and LocationId eq ${resolvedLocationId} and ScheduleId eq ${resolvedScheduleId} and OccurrenceDate eq datetime'${formattedDate}'`
+          );
+          if (existingOcc && existingOcc.length > 0) {
+            occurrenceId = existingOcc[0].Id;
+          }
+        } catch {
+          // Ignore; fall through to create/preview.
+        }
+
+        if (!occurrenceId) {
+          if (!shouldMutate) {
+            occurrenceId = 9999; // dryRun placeholder, mirrors addAttendance.
+          } else {
+            // OMIT SundayDate — Rock computes it; sending it can 400.
+            const occResult = await rockClient.post<any>(ctx, '/api/AttendanceOccurrences', {
+              GroupId: groupId,
+              LocationId: resolvedLocationId,
+              ScheduleId: resolvedScheduleId,
+              OccurrenceDate: formattedDate,
+            });
+            occurrenceId = typeof occResult === 'number' ? occResult : occResult?.Id;
+          }
+        }
+
+        if (!occurrenceId) {
+          throw new Error('Failed to resolve or create AttendanceOccurrence.');
+        }
+
+        // 5. Create-or-patch the Attendance for (OccurrenceId, PersonAliasId).
+        // NEVER filter on RSVP/ScheduledToAttend — Rock 400s on enum-vs-int/string mismatches.
+        let existingAtt: any[] = [];
+        try {
+          existingAtt = await rockClient.get<any[]>(
+            ctx,
+            `/api/Attendances?$filter=OccurrenceId eq ${occurrenceId} and PersonAliasId eq ${resolvedPersonAliasId}`
+          );
+        } catch {
+          // Ignore.
+        }
+
+        const isUpdating = existingAtt && existingAtt.length > 0;
+        const targetAttendanceId = isUpdating ? existingAtt[0].Id : null;
+
+        const payload: any = {
+          OccurrenceId: occurrenceId,
+          PersonAliasId: resolvedPersonAliasId,
+          ScheduledToAttend: true,
+          RSVP: confirmed ? RSVP_YES : RSVP_UNKNOWN,
+          DidAttend: false,
+          StartDateTime: formattedDate,
+        };
+        if (campusId) payload.CampusId = campusId;
+
+        const resolvedIds = {
+          personAliasId: resolvedPersonAliasId,
+          locationId: resolvedLocationId,
+          scheduleId: resolvedScheduleId,
+          occurrenceId,
+        };
+
+        if (!shouldMutate) {
+          auditLogger.log(ctx, {
+            tool: 'rock_roster',
+            action: parsed.action,
+            target: { model: 'attendances', id: targetAttendanceId || undefined },
+            dryRun: true,
+            commit: false,
+            reason,
+            outcome: 'allowed',
+          });
+          return formatResponse(parsed.action, ctx, {
+            dryRun: true,
+            committed: false,
+            isUpdating,
+            resolved: resolvedIds,
+            payload,
+          });
+        }
+
+        let result;
+        if (isUpdating) {
+          const patchPayload = { ScheduledToAttend: true, RSVP: payload.RSVP };
+          try {
+            result = await rockClient.patch(ctx, `/api/v2/models/attendances/${targetAttendanceId}`, patchPayload);
+          } catch {
+            result = await rockClient.patch(ctx, `/api/Attendances/${targetAttendanceId}`, patchPayload);
+          }
+        } else {
+          try {
+            result = await rockClient.post(ctx, '/api/v2/models/attendances', payload);
+          } catch {
+            result = await rockClient.post(ctx, '/api/Attendances', payload);
+          }
+        }
+
+        auditLogger.log(ctx, {
+          tool: 'rock_roster',
+          action: parsed.action,
+          target: { model: 'attendances', id: result || targetAttendanceId || undefined },
+          dryRun: false,
+          commit: true,
+          reason,
+          outcome: 'success',
+        });
+
+        return formatResponse(parsed.action, ctx, { committed: true, isUpdating, resolved: resolvedIds, result });
+      } catch (err: any) {
+        auditLogger.log(ctx, {
+          tool: 'rock_roster',
+          action: parsed.action,
+          target: { model: 'attendances' },
+          dryRun: false,
+          commit: true,
+          reason,
+          outcome: 'error',
+          errorCode: 'SCHEDULE_WRITE_ERROR',
+        });
+        return formatResponse(parsed.action, ctx, null, {
+          code: 'SCHEDULE_WRITE_ERROR',
+          message: err.message,
+        });
+      }
+    }
+
+    if (parsed.action === 'unschedule') {
+      // WRITE logic implemented in a later task (B4). Stubbed here so the schema
       // advertises all 4 actions now, without applying any mutation.
       return formatResponse(parsed.action, ctx, null, {
         code: 'NOT_IMPLEMENTED',

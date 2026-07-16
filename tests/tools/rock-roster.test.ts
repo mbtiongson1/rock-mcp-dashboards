@@ -20,7 +20,7 @@ describe('rock_roster tool', () => {
       mode: 'readwrite',
       rockClient: mockClient,
       oauth: { subject: 'test-user' },
-      rockUser: { personId: 123, isRsrAdmin: true },
+      rockUser: { personId: 123, isRsrAdmin: true, isStaff: true, ledGroupIds: [] },
       scopes: new Set(['read', 'write']),
       request: { sessionId: 'session-123' },
     } as unknown as OAuthRockContext;
@@ -233,6 +233,40 @@ describe('rock_roster tool', () => {
       expect(carlo.rsvp).toBe('Unknown');
     });
 
+    it('maps a null/undefined RSVP to Unknown, not No (rsvpLabel(null) guard)', async () => {
+      mockClient.get.mockImplementation((_ctx: any, path: string) => {
+        if (path.includes('/api/GroupLocations')) {
+          return Promise.resolve([{ Id: 1, LocationId: 10, Location: { Name: 'Tech Captain' } }]);
+        }
+        if (path.includes('/api/GroupLocationSchedules')) {
+          return Promise.resolve([{ ScheduleId: 100, Schedule: { Name: '10AM' } }]);
+        }
+        if (path.includes('/api/AttendanceOccurrences')) {
+          return Promise.resolve([{ Id: 900, GroupId: 42, LocationId: 10, ScheduleId: 100, OccurrenceDate: '2026-07-19T00:00:00' }]);
+        }
+        if (path.includes('/api/Attendances')) {
+          return Promise.resolve([
+            {
+              Id: 1,
+              OccurrenceId: 900,
+              ScheduledToAttend: true,
+              RSVP: null,
+              PersonAlias: { Id: 5001, PersonId: 200, Person: { NickName: 'Alex', FirstName: 'Alex', LastName: 'Santos' } },
+            },
+          ]);
+        }
+        return Promise.reject(new Error(`unexpected path: ${path}`));
+      });
+
+      const result = await rockRosterTool.handle({ action: 'viewRoster', groupId: 42, date: '2026-07-19' }, null, mockCtx);
+      const response = JSON.parse(result.content[0].text!);
+
+      const service = response.result.services.find((s: any) => s.scheduleId === 100);
+      const role = service.roles.find((r: any) => r.locationId === 10);
+      const alex = role.volunteers.find((v: any) => v.personId === 200);
+      expect(alex.rsvp).toBe('Unknown');
+    });
+
     it('never puts ScheduledToAttend or RSVP inside an OData $filter', async () => {
       await rockRosterTool.handle({ action: 'viewRoster', groupId: 42, date: '2026-07-19' }, null, mockCtx);
 
@@ -267,26 +301,370 @@ describe('rock_roster tool', () => {
     });
   });
 
-  describe('schedule / unschedule stubs (implemented in B3/B4)', () => {
-    it('schedule returns NOT_IMPLEMENTED', async () => {
+  describe('schedule (write, groupLeader tier)', () => {
+    it('a leader can preview (dryRun default) a schedule for their own led group', async () => {
+      const ctx = {
+        ...mockCtx,
+        rockUser: { personId: 5, isRsrAdmin: false, isStaff: false, ledGroupIds: [42] },
+      };
+      mockClient.get.mockImplementation((_ctx: any, path: string) => {
+        if (path.includes('/api/AttendanceOccurrences')) return Promise.resolve([]);
+        if (path.includes('/api/Attendances')) return Promise.resolve([]);
+        if (path.includes('/api/Groups/')) return Promise.resolve({ Id: 42, CampusId: 1 });
+        return Promise.reject(new Error(`unexpected path: ${path}`));
+      });
+
       const result = await rockRosterTool.handle(
         {
           action: 'schedule',
           groupId: 42,
-          personId: 200,
+          personAliasId: 5001,
           locationId: 10,
           scheduleId: 100,
           date: '2026-07-19',
           reason: 'test',
         },
         null,
-        mockCtx
+        ctx
       );
       const response = JSON.parse(result.content[0].text!);
-      expect(response.ok).toBe(false);
-      expect(response.error.code).toBe('NOT_IMPLEMENTED');
+
+      expect(response.ok).toBe(true);
+      expect(response.result.dryRun).toBe(true);
+      expect(response.result.committed).toBe(false);
+      expect(response.result.resolved).toEqual({
+        personAliasId: 5001,
+        locationId: 10,
+        scheduleId: 100,
+        occurrenceId: expect.any(Number),
+      });
+      expect(response.result.payload.ScheduledToAttend).toBe(true);
+      expect(response.result.payload.RSVP).toBe(3); // RSVP_UNKNOWN = pending
+      expect(mockClient.post).not.toHaveBeenCalled();
+      expect(mockClient.patch).not.toHaveBeenCalled();
     });
 
+    it('denies a leader scheduling for a group they do NOT lead', async () => {
+      const ctx = {
+        ...mockCtx,
+        rockUser: { personId: 5, isRsrAdmin: false, isStaff: false, ledGroupIds: [42] },
+      };
+
+      const result = await rockRosterTool.handle(
+        {
+          action: 'schedule',
+          groupId: 99,
+          personAliasId: 5001,
+          locationId: 10,
+          scheduleId: 100,
+          date: '2026-07-19',
+          commit: true,
+          dryRun: false,
+          reason: 'test',
+        },
+        null,
+        ctx
+      );
+      const response = JSON.parse(result.content[0].text!);
+
+      expect(response.ok).toBe(false);
+      expect(response.error.code).toBe('NOT_GROUP_LEADER');
+      expect(mockClient.post).not.toHaveBeenCalled();
+      expect(mockClient.patch).not.toHaveBeenCalled();
+    });
+
+    it('an admin can commit a brand-new schedule (create occurrence + create attendance)', async () => {
+      const ctx = {
+        ...mockCtx,
+        rockUser: { personId: 1, isRsrAdmin: true, isStaff: true, ledGroupIds: [] },
+      };
+      mockClient.get.mockImplementation((_ctx: any, path: string) => {
+        if (path.includes('/api/AttendanceOccurrences')) return Promise.resolve([]);
+        if (path.includes('/api/Attendances')) return Promise.resolve([]);
+        if (path.includes('/api/Groups/')) return Promise.resolve({ Id: 42, CampusId: 7 });
+        return Promise.reject(new Error(`unexpected path: ${path}`));
+      });
+      mockClient.post.mockImplementation((_ctx: any, path: string) => {
+        if (path.includes('AttendanceOccurrences')) return Promise.resolve({ Id: 777 });
+        if (path.includes('attendances')) return Promise.resolve({ Id: 888 });
+        return Promise.reject(new Error(`unexpected post path: ${path}`));
+      });
+
+      const result = await rockRosterTool.handle(
+        {
+          action: 'schedule',
+          groupId: 42,
+          personAliasId: 5001,
+          locationId: 10,
+          scheduleId: 100,
+          date: '2026-07-19',
+          commit: true,
+          dryRun: false,
+          reason: 'test',
+        },
+        null,
+        ctx
+      );
+      const response = JSON.parse(result.content[0].text!);
+
+      expect(response.ok).toBe(true);
+      expect(response.result.committed).toBe(true);
+      expect(mockClient.post).toHaveBeenCalledWith(ctx, '/api/AttendanceOccurrences', expect.objectContaining({
+        GroupId: 42,
+        LocationId: 10,
+        ScheduleId: 100,
+        OccurrenceDate: '2026-07-19T00:00:00',
+      }));
+      // SundayDate must be omitted — Rock computes it, sending it can 400.
+      const occCall = mockClient.post.mock.calls.find((c: any[]) => c[1] === '/api/AttendanceOccurrences');
+      expect(occCall![2]).not.toHaveProperty('SundayDate');
+
+      expect(mockClient.post).toHaveBeenCalledWith(
+        ctx,
+        '/api/v2/models/attendances',
+        expect.objectContaining({ ScheduledToAttend: true, RSVP: 3, CampusId: 7 })
+      );
+    });
+
+    it('confirmed:true sets RSVP to Yes (1) instead of pending Unknown (3)', async () => {
+      const ctx = {
+        ...mockCtx,
+        rockUser: { personId: 1, isRsrAdmin: true, isStaff: true, ledGroupIds: [] },
+      };
+      mockClient.get.mockImplementation((_ctx: any, path: string) => {
+        if (path.includes('/api/AttendanceOccurrences')) return Promise.resolve([]);
+        if (path.includes('/api/Attendances')) return Promise.resolve([]);
+        if (path.includes('/api/Groups/')) return Promise.resolve({ Id: 42 });
+        return Promise.reject(new Error(`unexpected path: ${path}`));
+      });
+
+      const result = await rockRosterTool.handle(
+        {
+          action: 'schedule',
+          groupId: 42,
+          personAliasId: 5001,
+          locationId: 10,
+          scheduleId: 100,
+          date: '2026-07-19',
+          confirmed: true,
+          reason: 'test',
+        },
+        null,
+        ctx
+      );
+      const response = JSON.parse(result.content[0].text!);
+
+      expect(response.result.payload.RSVP).toBe(1); // RSVP_YES
+    });
+
+    it('patches an existing Attendance instead of creating a new one', async () => {
+      const ctx = {
+        ...mockCtx,
+        rockUser: { personId: 1, isRsrAdmin: true, isStaff: true, ledGroupIds: [] },
+      };
+      mockClient.get.mockImplementation((_ctx: any, path: string) => {
+        if (path.includes('/api/AttendanceOccurrences')) return Promise.resolve([{ Id: 900 }]);
+        if (path.includes('/api/Attendances')) return Promise.resolve([{ Id: 55 }]);
+        if (path.includes('/api/Groups/')) return Promise.resolve({ Id: 42 });
+        return Promise.reject(new Error(`unexpected path: ${path}`));
+      });
+      mockClient.patch.mockResolvedValue({ Id: 55 });
+
+      const result = await rockRosterTool.handle(
+        {
+          action: 'schedule',
+          groupId: 42,
+          personAliasId: 5001,
+          locationId: 10,
+          scheduleId: 100,
+          date: '2026-07-19',
+          commit: true,
+          dryRun: false,
+          reason: 'test',
+        },
+        null,
+        ctx
+      );
+      const response = JSON.parse(result.content[0].text!);
+
+      expect(response.ok).toBe(true);
+      expect(mockClient.post).not.toHaveBeenCalled();
+      expect(mockClient.patch).toHaveBeenCalledWith(
+        ctx,
+        '/api/v2/models/attendances/55',
+        expect.objectContaining({ ScheduledToAttend: true, RSVP: 3 })
+      );
+    });
+
+    it('returns PERSON_AMBIGUOUS with candidates when personName matches multiple people; no write', async () => {
+      const ctx = {
+        ...mockCtx,
+        rockUser: { personId: 1, isRsrAdmin: true, isStaff: true, ledGroupIds: [] },
+      };
+      mockClient.get.mockImplementation((_ctx: any, path: string) => {
+        if (path.includes('/api/People?')) {
+          return Promise.resolve([
+            { Id: 10, NickName: 'Sam', LastName: 'Santos' },
+            { Id: 11, FirstName: 'Samuel', LastName: 'Santos' },
+          ]);
+        }
+        return Promise.reject(new Error(`unexpected path: ${path}`));
+      });
+
+      const result = await rockRosterTool.handle(
+        {
+          action: 'schedule',
+          groupId: 42,
+          personName: 'Sam Santos',
+          locationId: 10,
+          scheduleId: 100,
+          date: '2026-07-19',
+          reason: 'test',
+        },
+        null,
+        ctx
+      );
+      const response = JSON.parse(result.content[0].text!);
+
+      expect(response.ok).toBe(false);
+      expect(response.error.code).toBe('PERSON_AMBIGUOUS');
+      expect(response.error.details.candidates).toHaveLength(2);
+      expect(mockClient.post).not.toHaveBeenCalled();
+      expect(mockClient.patch).not.toHaveBeenCalled();
+    });
+
+    it('returns ROLE_UNRESOLVED when roleName matches no group role; no write', async () => {
+      const ctx = {
+        ...mockCtx,
+        rockUser: { personId: 1, isRsrAdmin: true, isStaff: true, ledGroupIds: [] },
+      };
+      mockClient.get.mockImplementation((_ctx: any, path: string) => {
+        if (path.includes('/api/GroupLocations')) {
+          return Promise.resolve([{ Id: 1, LocationId: 10, Location: { Name: 'Tech Captain' } }]);
+        }
+        if (path.includes('/api/GroupLocationSchedules')) {
+          return Promise.resolve([{ ScheduleId: 100, Schedule: { Name: '10AM' } }]);
+        }
+        return Promise.reject(new Error(`unexpected path: ${path}`));
+      });
+
+      const result = await rockRosterTool.handle(
+        {
+          action: 'schedule',
+          groupId: 42,
+          personAliasId: 5001,
+          roleName: 'Nonexistent Role',
+          scheduleId: 100,
+          date: '2026-07-19',
+          reason: 'test',
+        },
+        null,
+        ctx
+      );
+      const response = JSON.parse(result.content[0].text!);
+
+      expect(response.ok).toBe(false);
+      expect(response.error.code).toBe('ROLE_UNRESOLVED');
+      expect(mockClient.post).not.toHaveBeenCalled();
+      expect(mockClient.patch).not.toHaveBeenCalled();
+    });
+
+    it('returns SERVICE_UNRESOLVED when serviceName matches no group service; no write', async () => {
+      const ctx = {
+        ...mockCtx,
+        rockUser: { personId: 1, isRsrAdmin: true, isStaff: true, ledGroupIds: [] },
+      };
+      mockClient.get.mockImplementation((_ctx: any, path: string) => {
+        if (path.includes('/api/GroupLocations')) {
+          return Promise.resolve([{ Id: 1, LocationId: 10, Location: { Name: 'Tech Captain' } }]);
+        }
+        if (path.includes('/api/GroupLocationSchedules')) {
+          return Promise.resolve([{ ScheduleId: 100, Schedule: { Name: '10AM' } }]);
+        }
+        return Promise.reject(new Error(`unexpected path: ${path}`));
+      });
+
+      const result = await rockRosterTool.handle(
+        {
+          action: 'schedule',
+          groupId: 42,
+          personAliasId: 5001,
+          locationId: 10,
+          serviceName: 'Nonexistent Service',
+          date: '2026-07-19',
+          reason: 'test',
+        },
+        null,
+        ctx
+      );
+      const response = JSON.parse(result.content[0].text!);
+
+      expect(response.ok).toBe(false);
+      expect(response.error.code).toBe('SERVICE_UNRESOLVED');
+      expect(mockClient.post).not.toHaveBeenCalled();
+      expect(mockClient.patch).not.toHaveBeenCalled();
+    });
+
+    it('never puts RSVP or ScheduledToAttend inside the attendance existence-check $filter', async () => {
+      const ctx = {
+        ...mockCtx,
+        rockUser: { personId: 1, isRsrAdmin: true, isStaff: true, ledGroupIds: [] },
+      };
+      mockClient.get.mockImplementation((_ctx: any, path: string) => {
+        if (path.includes('/api/AttendanceOccurrences')) return Promise.resolve([{ Id: 900 }]);
+        if (path.includes('/api/Attendances')) return Promise.resolve([]);
+        if (path.includes('/api/Groups/')) return Promise.resolve({ Id: 42 });
+        return Promise.reject(new Error(`unexpected path: ${path}`));
+      });
+
+      await rockRosterTool.handle(
+        {
+          action: 'schedule',
+          groupId: 42,
+          personAliasId: 5001,
+          locationId: 10,
+          scheduleId: 100,
+          date: '2026-07-19',
+          reason: 'test',
+        },
+        null,
+        ctx
+      );
+
+      const attendanceCall = mockClient.get.mock.calls.find((call: any[]) => (call[1] as string).includes('/api/Attendances?'));
+      expect(attendanceCall).toBeDefined();
+      const path = attendanceCall![1] as string;
+      expect(path).toMatch(/OccurrenceId eq/);
+      expect(path).toMatch(/PersonAliasId eq/);
+      expect(path).not.toMatch(/RSVP/);
+      expect(path).not.toMatch(/ScheduledToAttend/);
+    });
+
+    it('returns UNAUTHORIZED when called in readonly mode (defense in depth)', async () => {
+      const ctx = { ...mockCtx, mode: 'readonly', scopes: new Set(['read']) };
+
+      const result = await rockRosterTool.handle(
+        {
+          action: 'schedule',
+          groupId: 42,
+          personAliasId: 5001,
+          locationId: 10,
+          scheduleId: 100,
+          date: '2026-07-19',
+          reason: 'test',
+        },
+        null,
+        ctx
+      );
+      const response = JSON.parse(result.content[0].text!);
+
+      expect(response.ok).toBe(false);
+      expect(response.error.code).toBe('UNAUTHORIZED');
+      expect(mockClient.get).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('unschedule stub (implemented in B4)', () => {
     it('unschedule returns NOT_IMPLEMENTED', async () => {
       const result = await rockRosterTool.handle(
         {
