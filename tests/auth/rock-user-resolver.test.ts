@@ -316,6 +316,136 @@ describe('RockUserResolver', () => {
   });
 });
 
+describe('ledGroupIds / getLedGroupIds', () => {
+  let mockClient: RockClient;
+  let resolver: RockUserResolver;
+  const mockCtx = {} as OAuthRockContext;
+
+  function createMockClient(): RockClient {
+    return {
+      get: vi.fn(),
+      post: vi.fn(),
+      put: vi.fn(),
+      patch: vi.fn(),
+      delete: vi.fn(),
+    };
+  }
+
+  /**
+   * Builds a mock client for a single non-admin, non-staff person whose
+   * leadership GroupMembers query either returns `leadershipResult` (an array
+   * of raw GroupMember rows) or throws it (if it's an Error).
+   */
+  function nonAdminClient(personId: number, leadershipResult: any[] | Error): RockClient {
+    const client = createMockClient();
+    client.get = vi.fn().mockImplementation(async (_ctx, path: string) => {
+      if (path.includes('/api/People')) {
+        return [{ Id: personId, PrimaryAliasId: personId * 10, Guid: `guid-${personId}` }];
+      }
+      if (path.includes('/api/Groups')) {
+        // No RSR admin / staff role groups exist for this person — isRsrAdmin
+        // and isStaff both resolve to false without ever hitting GroupMembers
+        // for those checks.
+        return [];
+      }
+      if (path.includes('/api/GroupMembers')) {
+        // The leadership query is the only GroupMembers call reachable here.
+        // GroupMemberStatus/IsLeader are legitimately in $select — the
+        // constraint is that the $filter clause itself must never compare
+        // either enum (that 400s on Rock's EDM string typing).
+        const [, filterAndRest = ''] = path.split('$filter=');
+        const filterClause = filterAndRest.split('&')[0];
+        expect(filterClause).toBe(`PersonId eq ${personId}`);
+        expect(path).toContain('$expand=GroupRole');
+        if (leadershipResult instanceof Error) throw leadershipResult;
+        return leadershipResult;
+      }
+      return [];
+    });
+    return client;
+  }
+
+  beforeEach(() => {
+    mockClient = createMockClient();
+    resolver = new RockUserResolver(mockClient);
+  });
+
+  it('includes only active+leader rows and dedupes GroupId', async () => {
+    const rows = [
+      { GroupId: 10, GroupMemberStatus: 'Active', GroupRole: { IsLeader: true } },
+      { GroupId: 10, GroupMemberStatus: 1, GroupRole: { IsLeader: true } }, // duplicate group, active leader
+      { GroupId: 20, GroupMemberStatus: 'Inactive', GroupRole: { IsLeader: true } }, // inactive leader — excluded
+      { GroupId: 30, GroupMemberStatus: 'Active', GroupRole: { IsLeader: false } }, // active non-leader — excluded
+    ];
+    resolver = new RockUserResolver(nonAdminClient(1, rows));
+
+    const result = await resolver.resolve(mockCtx, { subject: 'leader-1', email: 'leader1@example.com' });
+
+    expect(result.ledGroupIds).toEqual([10]);
+  });
+
+  it('counts both GroupMemberStatus enum representations (1 and "Active")', async () => {
+    const rows = [
+      { GroupId: 40, GroupMemberStatus: 1, GroupRole: { IsLeader: true } },
+      { GroupId: 41, GroupMemberStatus: 'Active', GroupRole: { IsLeader: true } },
+    ];
+    resolver = new RockUserResolver(nonAdminClient(2, rows));
+
+    const result = await resolver.resolve(mockCtx, { subject: 'leader-2', email: 'leader2@example.com' });
+
+    expect(result.ledGroupIds?.sort()).toEqual([40, 41]);
+  });
+
+  it('fails closed to [] when the leadership lookup throws, and resolve() still succeeds', async () => {
+    resolver = new RockUserResolver(nonAdminClient(3, new Error('500 Internal Server Error')));
+
+    const result = await resolver.resolve(mockCtx, { subject: 'leader-3', email: 'leader3@example.com' });
+
+    expect(result.personId).toBe(3);
+    expect(result.ledGroupIds).toEqual([]);
+  });
+
+  it('skips the leadership query entirely for admins and sets ledGroupIds to []', async () => {
+    const leadershipQuery = vi.fn();
+    mockClient.get = vi.fn().mockImplementation(async (_ctx, path: string) => {
+      if (path.includes('/api/People')) {
+        return [{ Id: 6, PrimaryAliasId: 60, Guid: 'guid-6' }];
+      }
+      if (path.includes('/api/Groups')) {
+        if (path.includes('Rock Administration')) return [{ Id: 99, Name: 'RSR - Rock Administration' }];
+        return [];
+      }
+      if (path.includes('$expand=GroupRole')) {
+        leadershipQuery(path);
+        return [{ GroupId: 999, GroupMemberStatus: 'Active', GroupRole: { IsLeader: true } }];
+      }
+      if (path.includes('/api/GroupMembers')) {
+        // Admin role-membership check for group 99.
+        if (path.includes('GroupId eq 99')) {
+          return [{ Id: 1, PersonId: 6, GroupId: 99, GroupMemberStatus: 1 }];
+        }
+        return [];
+      }
+      return [];
+    });
+
+    const result = await resolver.resolve(mockCtx, { subject: 'admin-1', email: 'admin1@example.com' });
+
+    expect(result.isRsrAdmin).toBe(true);
+    expect(result.ledGroupIds).toEqual([]);
+    expect(leadershipQuery).not.toHaveBeenCalled();
+  });
+
+  it('is always present ([]) on a resolved non-admin, non-leader user', async () => {
+    resolver = new RockUserResolver(nonAdminClient(7, []));
+
+    const result = await resolver.resolve(mockCtx, { subject: 'plain-1', email: 'plain1@example.com' });
+
+    expect(result.ledGroupIds).toEqual([]);
+    expect(result.ledGroupIds).not.toBeUndefined();
+  });
+});
+
 describe('isActiveGroupMemberStatus', () => {
   it('accepts both the integer and string "Active" representations', () => {
     expect(isActiveGroupMemberStatus(1)).toBe(true);
