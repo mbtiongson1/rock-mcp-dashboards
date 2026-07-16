@@ -398,7 +398,7 @@ export const rockRosterTool: GatewayTool = {
     return rockRosterSchema;
   },
   descriptionForMode(_mode: McpMode): string {
-    return 'View and manage volunteer serving assignments (Group Scheduler): list roles/services, view a date\'s roster, and schedule/unschedule volunteers.';
+    return 'Group Scheduler: schedule/unschedule volunteers to a specific date, service time, and serving role, and view a date\'s roster. Use whenever a request mentions a specific date, service, or role assignment — e.g. \'roster X to [team] for Sunday\', \'schedule the July 19 team\', \'assign X to Stream Operator\', \'who\'s scheduled\'. For long-term team membership (who is on the team), use `rock_ministry` instead.';
   },
   async handle(args: any, _extra: any, ctx: OAuthRockContext): Promise<McpToolResult> {
     const parsed = rockRosterSchema.parse(args);

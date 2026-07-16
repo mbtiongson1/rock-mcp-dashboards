@@ -10,7 +10,9 @@ Use these rules before calling any tool:
 
 - Use `rock_lookup` when you do not know a Rock ID, Group Type, attribute key, report key, or Entity Search key.
 - Use `rock_people` for person-centered questions. The `filter` action lists or counts people by campus/connection status with true totals, `offset` pagination, and a `countOnly` mode.
-- Use `rock_ministry` for Connect Groups, Ministry Teams, attendance, rosters, registrations, and consistency.
+- Use `rock_ministry` for Connect Group / Ministry Team membership, directories, attendance, and registrations.
+- Use `rock_roster` for Group Scheduler assignments — scheduling volunteers to a date, service, or serving role.
+- **Decision rule:** if the request includes a specific date, service time, or role name → `rock_roster`. If it's about ongoing team membership with no date attached → `rock_ministry`.
 - Use `rock_report` for report-like outputs, dashboards, and large tables.
 - Use `rock_entity` only when the domain tools do not fit.
 - Use `rock_workflow` for connection requests and workflow status.

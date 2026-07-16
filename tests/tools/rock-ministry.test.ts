@@ -670,13 +670,13 @@ describe('rock_ministry tool', () => {
       });
     });
 
-    describe('updateServingRoster', () => {
+    describe('updateGroupMemberRole', () => {
       it('allows a non-admin leader of the target group, resolved via GroupMember lookup', async () => {
         nonAdminLeaderCtx([LED_GROUP]);
         mockClient.get.mockResolvedValueOnce({ Id: 888, GroupId: LED_GROUP, PersonId: 100 });
 
         const result = await rockMinistryTool.handle(
-          { action: 'updateServingRoster', groupMemberId: 888, status: 'Active', dryRun: true, commit: false, reason: 'test' },
+          { action: 'updateGroupMemberRole', groupMemberId: 888, status: 'Active', dryRun: true, commit: false, reason: 'test' },
           null,
           mockCtx
         );
@@ -692,7 +692,7 @@ describe('rock_ministry tool', () => {
         mockClient.get.mockResolvedValueOnce({ Id: 888, GroupId: LED_GROUP, PersonId: 100 });
 
         const result = await rockMinistryTool.handle(
-          { action: 'updateServingRoster', groupMemberId: 888, status: 'Active', dryRun: false, commit: true, reason: 'test' },
+          { action: 'updateGroupMemberRole', groupMemberId: 888, status: 'Active', dryRun: false, commit: true, reason: 'test' },
           null,
           mockCtx
         );
@@ -708,7 +708,7 @@ describe('rock_ministry tool', () => {
         mockClient.get.mockRejectedValueOnce(new Error('not found'));
 
         const result = await rockMinistryTool.handle(
-          { action: 'updateServingRoster', groupMemberId: 888, status: 'Active', dryRun: false, commit: true, reason: 'test' },
+          { action: 'updateGroupMemberRole', groupMemberId: 888, status: 'Active', dryRun: false, commit: true, reason: 'test' },
           null,
           mockCtx
         );
@@ -726,7 +726,7 @@ describe('rock_ministry tool', () => {
         mockClient.get.mockRejectedValueOnce(new Error('not found'));
 
         const result = await rockMinistryTool.handle(
-          { action: 'updateServingRoster', groupMemberId: 888, status: 'Active', dryRun: true, commit: false, reason: 'test' },
+          { action: 'updateGroupMemberRole', groupMemberId: 888, status: 'Active', dryRun: true, commit: false, reason: 'test' },
           null,
           mockCtx
         );

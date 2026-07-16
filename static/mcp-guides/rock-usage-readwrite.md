@@ -10,7 +10,9 @@ Use these rules before calling any tool:
 
 - Use `rock_lookup` when you do not know a Rock ID, Group Type, attribute key, report key, or Entity Search key.
 - Use `rock_people` for person-centered questions and updates. The `filter` action lists or counts people by campus/connection status with true totals, `offset` pagination, and a `countOnly` mode.
-- Use `rock_ministry` for Connect Groups, Ministry Teams, attendance, rosters, registrations, and updates.
+- Use `rock_ministry` for Connect Group / Ministry Team membership, directories, attendance, and registrations.
+- Use `rock_roster` for Group Scheduler assignments — scheduling volunteers to a date, service, or serving role.
+- **Decision rule:** if the request includes a specific date, service time, or role name → `rock_roster`. If it's about ongoing team membership with no date attached → `rock_ministry`.
 - Use `rock_report` for report-like outputs, dashboards, and large tables.
 - Use `rock_entity` only when the domain tools do not fit.
 - Use `rock_workflow` for connection requests, workflow status, and workflow transitions.
@@ -57,7 +59,7 @@ Use these rules before calling any tool:
 | `addOrUpdateGroupMember` | **Write** | Add or update a group member |
 | `removeGroupMember` | **Write** | Remove a group member by ID or group+person |
 | `addAttendance` | **Write** | Record attendance for a person in a group |
-| `updateServingRoster` | **Write** | Update a serving roster member's role or status |
+| `updateGroupMemberRole` | **Write** | Update a group member's role or status (membership, not scheduling) |
 
 ### rock_roster (Group Scheduler)
 
@@ -264,9 +266,9 @@ Additional safety rules:
 - Requires exact group ID, person ID, and occurrence date/ID.
 - Requires `dryRun: false` and `commit: true`.
 
-### Serving Roster (`rock_ministry` `updateServingRoster`)
+### Group Member Role (`rock_ministry` `updateGroupMemberRole`)
 
-- Updates a serving roster member's role or status.
+- Updates a group member's role or status (long-term membership, not date/service scheduling).
 - Requires exact IDs discovered via `rock_ministry` or `rock_lookup`.
 - Requires `dryRun: false` and `commit: true`.
 

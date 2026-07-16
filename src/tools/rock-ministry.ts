@@ -68,7 +68,7 @@ const rockMinistrySchema = z.discriminatedUnion('action', [
     reason: z.string().min(1).describe('Required justification for the change; recorded in the audit log.'),
   }),
   z.object({
-    action: z.literal('updateServingRoster'),
+    action: z.literal('updateGroupMemberRole'),
     groupMemberId: z.coerce.number(),
     roleId: z.coerce.number().optional(),
     status: z.enum(['Active', 'Inactive']).optional(),
@@ -82,7 +82,7 @@ const auditLogger = new AuditLogger();
 
 export const rockMinistryTool: GatewayTool = {
   name: 'rock_ministry',
-  title: 'Rock Ministry Directory & Roster',
+  title: 'Rock Ministry Directory & Membership',
   schemaForMode(
     mode: McpMode,
     scopes: Set<McpScope>,
@@ -118,7 +118,7 @@ export const rockMinistryTool: GatewayTool = {
     return rockMinistrySchema;
   },
   descriptionForMode(_mode: McpMode): string {
-    return 'Directory lookups, health summaries, and event/attendance check-ins for Connect Groups and Ministry Teams.';
+    return 'Directory lookups, health summaries, and event/attendance check-ins for Connect Groups and Ministry Teams. Covers long-term team membership only (who\'s on the team). To schedule a volunteer for a specific date/service/role, use `rock_roster` instead.';
   },
   async handle(args: any, _extra: any, ctx: OAuthRockContext): Promise<McpToolResult> {
     const parsed = rockMinistrySchema.parse(args);
@@ -1029,7 +1029,7 @@ export const rockMinistryTool: GatewayTool = {
       }
     }
 
-    if (parsed.action === 'updateServingRoster') {
+    if (parsed.action === 'updateGroupMemberRole') {
       const { groupMemberId, roleId, status, dryRun, commit, reason } = parsed;
       if (ctx.mode !== 'readwrite' || !ctx.scopes.has('write')) {
         return formatResponse(parsed.action, ctx, null, {
