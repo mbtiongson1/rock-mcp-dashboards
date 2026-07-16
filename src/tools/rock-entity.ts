@@ -175,7 +175,11 @@ function projectPeopleSummary(record: any): any {
 export const rockEntityTool: GatewayTool = {
   name: 'rock_entity',
   title: 'Rock Entity Client',
-  schemaForMode(_mode: McpMode, _scopes: Set<McpScope>): z.ZodTypeAny | null {
+  schemaForMode(
+    _mode: McpMode,
+    _scopes: Set<McpScope>,
+    _caps: { isAdmin: boolean; isStaffOrAdmin: boolean }
+  ): z.ZodTypeAny | null {
     return rockEntitySchema;
   },
   descriptionForMode(_mode: McpMode): string {

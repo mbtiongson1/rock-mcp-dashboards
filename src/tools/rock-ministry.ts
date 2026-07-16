@@ -83,7 +83,11 @@ const auditLogger = new AuditLogger();
 export const rockMinistryTool: GatewayTool = {
   name: 'rock_ministry',
   title: 'Rock Ministry Directory & Roster',
-  schemaForMode(mode: McpMode, scopes: Set<McpScope>): z.ZodTypeAny | null {
+  schemaForMode(
+    mode: McpMode,
+    scopes: Set<McpScope>,
+    _caps: { isAdmin: boolean; isStaffOrAdmin: boolean }
+  ): z.ZodTypeAny | null {
     if (mode !== 'readwrite' || !scopes.has('write')) {
       return z.discriminatedUnion('action', [
         z.object({

@@ -1146,7 +1146,7 @@ describe('rock_people tool', () => {
     });
 
     it('is available in readonly mode', async () => {
-      const schema = rockPeopleTool.schemaForMode('readonly', new Set(['read']));
+      const schema = rockPeopleTool.schemaForMode('readonly', new Set(['read']), { isAdmin: false, isStaffOrAdmin: false });
       expect(schema).not.toBeNull();
 
       mockFilterPost(5, sampleRows);

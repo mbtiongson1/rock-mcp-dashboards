@@ -126,7 +126,14 @@ export const rockReportTool: GatewayTool = {
   name: 'rock_report',
   title: 'Rock Report & Analytics Viewer',
   appResourceUri: REPORT_VIEWER_URI,
-  schemaForMode(_mode: McpMode, _scopes: Set<McpScope>): z.ZodTypeAny | null {
+  schemaForMode(
+    _mode: McpMode,
+    _scopes: Set<McpScope>,
+    caps: { isAdmin: boolean; isStaffOrAdmin: boolean }
+  ): z.ZodTypeAny | null {
+    if (!caps.isStaffOrAdmin) {
+      return null; // Hidden from leader-only users (giving-exposure rule).
+    }
     return rockReportSchema;
   },
   descriptionForMode(_mode: McpMode): string {

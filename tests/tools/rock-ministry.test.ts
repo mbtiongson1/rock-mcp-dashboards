@@ -293,7 +293,7 @@ describe('rock_ministry tool', () => {
 
   describe('numeric param string coercion (issue #15)', () => {
     it('groupMembers schema parses string groupId to a number', () => {
-      const schema = rockMinistryTool.schemaForMode('readonly', new Set(['read']));
+      const schema = rockMinistryTool.schemaForMode('readonly', new Set(['read']), { isAdmin: false, isStaffOrAdmin: false });
       expect(schema).not.toBeNull();
       const result = (schema as z.ZodTypeAny).safeParse({ action: 'groupMembers', groupId: '86' });
       expect(result.success).toBe(true);
@@ -304,7 +304,7 @@ describe('rock_ministry tool', () => {
     });
 
     it('groups schema parses string limit to a number', () => {
-      const schema = rockMinistryTool.schemaForMode('readonly', new Set(['read']));
+      const schema = rockMinistryTool.schemaForMode('readonly', new Set(['read']), { isAdmin: false, isStaffOrAdmin: false });
       expect(schema).not.toBeNull();
       const result = (schema as z.ZodTypeAny).safeParse({ action: 'groups', kind: 'connectGroup', limit: '25' });
       expect(result.success).toBe(true);
@@ -314,14 +314,14 @@ describe('rock_ministry tool', () => {
     });
 
     it('groups schema still rejects out-of-range string limit (0 fails .positive())', () => {
-      const schema = rockMinistryTool.schemaForMode('readonly', new Set(['read']));
+      const schema = rockMinistryTool.schemaForMode('readonly', new Set(['read']), { isAdmin: false, isStaffOrAdmin: false });
       expect(schema).not.toBeNull();
       const result = (schema as z.ZodTypeAny).safeParse({ action: 'groups', kind: 'connectGroup', limit: '0' });
       expect(result.success).toBe(false);
     });
 
     it('groupMembers schema still rejects non-numeric string for groupId', () => {
-      const schema = rockMinistryTool.schemaForMode('readonly', new Set(['read']));
+      const schema = rockMinistryTool.schemaForMode('readonly', new Set(['read']), { isAdmin: false, isStaffOrAdmin: false });
       expect(schema).not.toBeNull();
       const result = (schema as z.ZodTypeAny).safeParse({ action: 'groupMembers', groupId: 'notanumber' });
       expect(result.success).toBe(false);

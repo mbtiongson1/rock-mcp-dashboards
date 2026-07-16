@@ -35,7 +35,11 @@ const rockLookupSchema = z.discriminatedUnion('action', [
 export const rockLookupTool: GatewayTool = {
   name: 'rock_lookup',
   title: 'Rock Runtime Discovery & Lookup',
-  schemaForMode(_mode: McpMode, _scopes: Set<McpScope>): z.ZodTypeAny | null {
+  schemaForMode(
+    _mode: McpMode,
+    _scopes: Set<McpScope>,
+    _caps: { isAdmin: boolean; isStaffOrAdmin: boolean }
+  ): z.ZodTypeAny | null {
     return rockLookupSchema;
   },
   descriptionForMode(_mode: McpMode): string {

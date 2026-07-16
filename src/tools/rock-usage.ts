@@ -14,7 +14,11 @@ const WIKI_HINT =
 export const rockUsageTool: GatewayTool = {
   name: 'rock_usage',
   title: 'Rock Usage Guide',
-  schemaForMode(_mode: McpMode, _scopes: Set<McpScope>): z.ZodTypeAny | null {
+  schemaForMode(
+    _mode: McpMode,
+    _scopes: Set<McpScope>,
+    _caps: { isAdmin: boolean; isStaffOrAdmin: boolean }
+  ): z.ZodTypeAny | null {
     // Plain optional-fields object: an empty object ({}) stays valid so the
     // default "no args → full guide" contract holds. Optional params turn the
     // tool into a searchable best-practices wiki.

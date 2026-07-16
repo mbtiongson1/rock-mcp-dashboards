@@ -484,7 +484,7 @@ describe('handleMcpPost', () => {
       expect(tools.find((t) => t.name === 'rock_write')).toBeDefined();
     });
 
-    it('upgrades a non-admin group leader on the auto endpoint and exposes the rock_write tool (200)', async () => {
+    it('upgrades a non-admin group leader on the auto endpoint but hides rock_write (leader is not admin)', async () => {
       const response = await handleMcpPost(
         listRequest(),
         'mcp',
@@ -493,7 +493,24 @@ describe('handleMcpPost', () => {
       expect(response.status).toBe(200);
       const json = parseMcpBody(await readBody(response));
       const tools: any[] = json.result.tools;
-      expect(tools.find((t) => t.name === 'rock_write')).toBeDefined();
+      // rock_write is admin-only, even for admitted leaders in readwrite mode.
+      expect(tools.find((t) => t.name === 'rock_write')).toBeUndefined();
+    });
+
+    it('exposes rock_ministry write actions to a non-admin group leader on the auto endpoint', async () => {
+      const response = await handleMcpPost(
+        listRequest(),
+        'mcp',
+        optionsWith(['read', 'write'], { isStaff: false, ledGroupIds: [5] })
+      );
+      expect(response.status).toBe(200);
+      const json = parseMcpBody(await readBody(response));
+      const tools: any[] = json.result.tools;
+      const ministry = tools.find((t) => t.name === 'rock_ministry');
+      expect(ministry).toBeDefined();
+      // Write actions must be visible so a leader can act on groups they lead;
+      // per-group leadership is enforced at handle time, not at schema visibility.
+      expect(ministry.inputSchema.properties.action.enum).toContain('addOrUpdateGroupMember');
     });
   });
 });

@@ -36,7 +36,7 @@ describe('rock_write tool', () => {
   });
 
   it('should return null schema in readonly mode', () => {
-    const schema = rockWriteTool.schemaForMode('readonly', new Set(['read']));
+    const schema = rockWriteTool.schemaForMode('readonly', new Set(['read']), { isAdmin: false, isStaffOrAdmin: false });
     expect(schema).toBeNull();
   });
 

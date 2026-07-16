@@ -68,9 +68,13 @@ const auditLogger = new AuditLogger();
 export const rockWriteTool: GatewayTool = {
   name: 'rock_write',
   title: 'Rock Mutation Client',
-  schemaForMode(mode: McpMode, scopes: Set<McpScope>): z.ZodTypeAny | null {
-    if (mode !== 'readwrite' || !scopes.has('write')) {
-      return null; // Register only in readwrite mode
+  schemaForMode(
+    mode: McpMode,
+    scopes: Set<McpScope>,
+    caps: { isAdmin: boolean; isStaffOrAdmin: boolean }
+  ): z.ZodTypeAny | null {
+    if (mode !== 'readwrite' || !scopes.has('write') || !caps.isAdmin) {
+      return null; // Register only in readwrite mode, for admins only
     }
     return rockWriteSchema;
   },
