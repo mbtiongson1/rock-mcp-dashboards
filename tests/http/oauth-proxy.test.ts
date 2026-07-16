@@ -167,6 +167,45 @@ describe('handleAuthorizeGet', () => {
     expect(scope).toEqual(expect.arrayContaining(['openid', 'email', 'offline_access', 'read', 'write']));
   });
 
+  it('always requests read+write from Auth0 even when the connector asks for read only', async () => {
+    const deps = makeDeps();
+    const connector = await registerConnector(deps.store);
+    const { challenge } = pkcePair();
+
+    const response = await handleAuthorizeGet(authorizeRequest({
+      client_id: connector.clientId,
+      redirect_uri: connector.redirectUris[0],
+      response_type: 'code',
+      state: 'abc',
+      scope: 'read',
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+    }), deps);
+
+    expect(response.status).toBe(302);
+    const scope = new URL(response.headers.get('location')!).searchParams.get('scope')!.split(' ');
+    expect(scope).toEqual(expect.arrayContaining(['read', 'write']));
+  });
+
+  it('requests read+write from Auth0 even when the connector omits scope entirely', async () => {
+    const deps = makeDeps();
+    const connector = await registerConnector(deps.store);
+    const { challenge } = pkcePair();
+
+    const response = await handleAuthorizeGet(authorizeRequest({
+      client_id: connector.clientId,
+      redirect_uri: connector.redirectUris[0],
+      response_type: 'code',
+      state: 'abc',
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+    }), deps);
+
+    expect(response.status).toBe(302);
+    const scope = new URL(response.headers.get('location')!).searchParams.get('scope')!.split(' ');
+    expect(scope).toEqual(expect.arrayContaining(['read', 'write']));
+  });
+
   it('rejects unknown client_id with 401 and does not redirect', async () => {
     const deps = makeDeps();
     const { challenge } = pkcePair();

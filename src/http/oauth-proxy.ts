@@ -38,6 +38,20 @@ const AUTH0_CLIENT_SECRET_KEYS = ['AUTH0_CLIENT_SECRET'];
 /** Scopes always requested from Auth0 in addition to what the connector asks for. */
 const BASE_AUTH0_SCOPES = ['openid', 'profile', 'email', 'offline_access'];
 
+/**
+ * Resource scopes this server always requests from Auth0, independent of what
+ * the connector asks for. Some MCP clients request only `read` (or omit the
+ * scope entirely), which permanently pinned admins to read-only because the
+ * `write` scope never reached the token. The resource metadata advertises both
+ * `read` and `write` (see localizeOAuthMetadata), so always requesting both is
+ * the correct proxy behaviour; whether `write` is actually granted still
+ * depends on Auth0 (API permissions / RBAC), and whether write tools are
+ * exposed still depends on the endpoint + mode resolution and the caller's Rock
+ * role. Requesting `write` for a user who is not an admin/leader is harmless —
+ * mode resolution keeps them read-only.
+ */
+const RESOURCE_SCOPES = ['read', 'write'];
+
 export function loadOAuthProxyClientConfig(env: OAuthEnv = process.env): OAuthProxyClientConfig {
   const clientId = firstEnvValue(env, AUTH0_CLIENT_ID_KEYS);
   if (!clientId) {
@@ -443,7 +457,7 @@ export function verifyPkceS256(codeVerifier: string, codeChallenge: string): boo
 }
 
 function mergeScopes(connectorScope: string | undefined): string {
-  const scopes = new Set<string>(BASE_AUTH0_SCOPES);
+  const scopes = new Set<string>([...BASE_AUTH0_SCOPES, ...RESOURCE_SCOPES]);
   for (const scope of (connectorScope ?? '').split(/\s+/).filter(Boolean)) {
     scopes.add(scope);
   }
