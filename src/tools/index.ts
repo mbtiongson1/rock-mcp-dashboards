@@ -6,6 +6,7 @@ import { rockMinistryTool } from './rock-ministry.js';
 import { rockReportTool } from './rock-report.js';
 import { rockWorkflowTool } from './rock-workflow.js';
 import { rockWriteTool } from './rock-write.js';
+import { rockRosterTool } from './rock-roster.js';
 
 export const allTools = [
   rockUsageTool,
@@ -16,4 +17,5 @@ export const allTools = [
   rockReportTool,
   rockWorkflowTool,
   rockWriteTool,
+  rockRosterTool,
 ];

@@ -127,4 +127,24 @@ describe('registerGatewayTools', () => {
 
     expect(params.action).toBe('unknown');
   });
+
+  it('registers rock_roster with a non-empty flattened advertisement schema', async () => {
+    registerGatewayTools(mockServer as McpServer, 'readwrite', {
+      ...testCtx,
+      mode: 'readwrite',
+      scopes: new Set(['read', 'write']),
+    });
+
+    const registerCalls = (mockServer.registerTool as any).mock.calls;
+    const rosterTool = registerCalls.find((call: any) => call[0] === 'rock_roster');
+    expect(rosterTool).toBeDefined();
+
+    const config = rosterTool![1];
+    // The flattened advertisement schema must expose the discriminator's enum
+    // of action names — a bare discriminated-union root would advertise an
+    // empty object schema here instead.
+    const shape = config.inputSchema?.shape ?? config.inputSchema?._def?.shape?.();
+    expect(shape).toBeDefined();
+    expect(shape.action).toBeDefined();
+  });
 });
