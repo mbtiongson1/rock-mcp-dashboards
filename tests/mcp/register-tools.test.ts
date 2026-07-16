@@ -35,6 +35,7 @@ describe('registerGatewayTools', () => {
         personId: 123,
         isRsrAdmin: false,
         isStaff: false,
+        ledGroupIds: [],
       },
       request: {
         sessionId: 'session-123',

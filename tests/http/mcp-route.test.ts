@@ -175,18 +175,6 @@ describe('handleMcpPost', () => {
     expect(text).toMatch(/limit|number/i);
   });
 
-  it('returns 403 when the readwrite endpoint is hit without the write scope', async () => {
-    const request = mcpRequest(
-      { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} },
-      { Authorization: 'Bearer read-only-token' }
-    );
-    const response = await handleMcpPost(request, 'readwrite', appOptions(verifierWithScopes(['read'])));
-
-    expect(response.status).toBe(403);
-    const json = JSON.parse(await readBody(response));
-    expect(json.error).toMatch(/write/i);
-  });
-
   it('rejects a ?url= override outside the allowed domain with 400', async () => {
     const request = new Request('https://mcp.example.com/mcp?url=evil.com', {
       method: 'POST',
@@ -396,7 +384,7 @@ describe('handleMcpPost', () => {
 
   describe('access tiers (staff vs admin vs neither)', () => {
     // Build a resolver for a linked Rock person with the given privilege flags.
-    const resolverFor = (over: { isRsrAdmin?: boolean; isStaff?: boolean }): RockUserResolver =>
+    const resolverFor = (over: { isRsrAdmin?: boolean; isStaff?: boolean; ledGroupIds?: number[] }): RockUserResolver =>
       ({
         resolve: async () => ({
           personId: 100,
@@ -404,13 +392,14 @@ describe('handleMcpPost', () => {
           personAliasId: 100,
           isRsrAdmin: false,
           isStaff: false,
+          ledGroupIds: [],
           ...over,
         }),
       } as unknown as RockUserResolver);
 
     const optionsWith = (
       scopes: string[],
-      over: { isRsrAdmin?: boolean; isStaff?: boolean }
+      over: { isRsrAdmin?: boolean; isStaff?: boolean; ledGroupIds?: number[] }
     ): CreateAppContextOptions => {
       const options = appOptions(verifierWithScopes(scopes));
       options.rockUserResolver = resolverFor(over);
@@ -459,24 +448,26 @@ describe('handleMcpPost', () => {
       expect(tools.find((t) => t.name === 'rock_write')).toBeUndefined();
     });
 
-    it('denies a staff worker on the readwrite endpoint with ADMIN_REQUIRED (403)', async () => {
-      const logSpy = vi.spyOn(AuditLogger.prototype, 'log');
-      const response = await handleMcpPost(listRequest(), 'readwrite', optionsWith(['read', 'write'], { isStaff: true }));
-      expect(response.status).toBe(403);
-      const json = JSON.parse(await readBody(response));
-      expect(json.error).toMatch(/administrator/i);
-      expect(logSpy.mock.calls.some((c) => c[1].errorCode === 'ADMIN_REQUIRED')).toBe(true);
-      logSpy.mockRestore();
-    });
-
     // ---- Admin: full access ----
     it('allows an RSR admin on the readonly endpoint (200)', async () => {
       const response = await handleMcpPost(listRequest(), 'readonly', optionsWith(['read'], { isRsrAdmin: true }));
       expect(response.status).toBe(200);
     });
 
-    it('allows an RSR admin on the readwrite endpoint and exposes the rock_write tool (200)', async () => {
-      const response = await handleMcpPost(listRequest(), 'readwrite', optionsWith(['read', 'write'], { isRsrAdmin: true }));
+    it('upgrades an RSR admin on the auto endpoint and exposes the rock_write tool (200)', async () => {
+      const response = await handleMcpPost(listRequest(), 'mcp', optionsWith(['read', 'write'], { isRsrAdmin: true }));
+      expect(response.status).toBe(200);
+      const json = parseMcpBody(await readBody(response));
+      const tools: any[] = json.result.tools;
+      expect(tools.find((t) => t.name === 'rock_write')).toBeDefined();
+    });
+
+    it('upgrades a non-admin group leader on the auto endpoint and exposes the rock_write tool (200)', async () => {
+      const response = await handleMcpPost(
+        listRequest(),
+        'mcp',
+        optionsWith(['read', 'write'], { isStaff: true, ledGroupIds: [5] })
+      );
       expect(response.status).toBe(200);
       const json = parseMcpBody(await readBody(response));
       const tools: any[] = json.result.tools;

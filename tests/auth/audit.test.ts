@@ -22,6 +22,7 @@ describe('AuditLogger', () => {
         personId: 42,
         isRsrAdmin: true,
         isStaff: true,
+        ledGroupIds: [],
       },
       request: {
         requestId: 'req-abc',

@@ -13,6 +13,7 @@ describe('authorizeWrite', () => {
         isRsrAdmin: false,
         isStaff: false,
         personId: 123,
+        ledGroupIds: [],
       },
       oauth: {
         subject: 'user-123',

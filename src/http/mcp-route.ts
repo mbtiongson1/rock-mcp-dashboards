@@ -1,6 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
-import { resolveMode, ScopeError, PersonResolutionError, AdminRequiredError, AccessDeniedError, EndpointKind } from '../mcp/modes.js';
+import { resolveMode, ScopeError, PersonResolutionError, AccessDeniedError, EndpointKind } from '../mcp/modes.js';
 import { registerGatewayTools } from '../mcp/register-tools.js';
 import { registerReportViewerApp } from '../mcp/apps.js';
 import { getRockGuideText } from '../mcp/guide-text.js';
@@ -119,8 +119,6 @@ export async function handleMcpPost(
     // any tool is registered or any mode is resolved. Both `isStaff` and
     // `isRsrAdmin` are determined from the user's own forwarded token and fail
     // closed (false) on any Rock lookup failure, so this gate fails closed too.
-    // (Admin-only enforcement for the /mcp/readwrite endpoint happens next, in
-    // resolveMode, which throws AdminRequiredError for a non-admin staff user.)
     if (!resolvedUser.isRsrAdmin && !resolvedUser.isStaff) {
       const email = ctx.oauth.email || ctx.oauth.subject;
       const orgName = process.env.ORGANIZATION_NAME || 'Favor Church';
@@ -130,8 +128,7 @@ export async function handleMcpPost(
       );
     }
 
-    // Resolve mode (throws ScopeError on insufficient scope, AdminRequiredError
-    // when a non-admin reaches the readwrite endpoint).
+    // Resolve mode (throws ScopeError on insufficient scope).
     const mode = resolveMode(endpointKind, ctx);
     ctx.mode = mode;
 
@@ -178,16 +175,6 @@ export async function handleMcpPost(
         outcome: 'denied',
         errorCode: 'ACCESS_DENIED',
         reason: `Non-staff/non-admin denied access for email: ${err.email || 'unknown'}`,
-      });
-      return jsonCors({ error: message }, { status: 403 }, requestOrigin);
-    }
-    if (err instanceof AdminRequiredError) {
-      auditLogger.log(ctx, {
-        tool: 'mcp',
-        action: 'resolveUser',
-        outcome: 'denied',
-        errorCode: 'ADMIN_REQUIRED',
-        reason: `Non-admin denied write access for email: ${err.email || 'unknown'}`,
       });
       return jsonCors({ error: message }, { status: 403 }, requestOrigin);
     }
