@@ -7,6 +7,8 @@ export interface WriteDescriptor {
   operation: 'create' | 'patch' | 'patchAttributes' | 'delete' | 'bulkPatch';
   fields?: string[];       // field names being written (for create/patch), if known
   count?: number;          // item count for bulk operations
+  groupId?: number;                    // target group (informational/audit only; not compared here)
+  callerIsTargetGroupLeader?: boolean; // tool resolves this from ctx.rockUser.ledGroupIds
 }
 
 export interface AuthzDecision {
@@ -22,43 +24,53 @@ export interface AuthzDecision {
 const MODEL_ALLOWLIST: Record<
   string,
   {
+    tier: 'admin' | 'groupLeader';
     operations: Set<'create' | 'patch' | 'patchAttributes' | 'delete' | 'bulkPatch'>;
     fields?: Set<string>; // undefined means all fields allowed for patchAttributes
   }
 > = {
   people: {
+    tier: 'admin',
     operations: new Set(['patch', 'patchAttributes', 'bulkPatch']),
     fields: new Set(['Email', 'FirstName', 'LastName', 'NickName']),
   },
   phonenumbers: {
+    tier: 'admin',
     operations: new Set(['create', 'patch']),
     fields: new Set(['PersonId', 'NumberTypeValueId', 'Number', 'IsMessagingEnabled']),
   },
   notes: {
+    tier: 'admin',
     operations: new Set(['create']),
     fields: new Set(['EntityId', 'NoteTypeId', 'Text', 'IsAlert', 'Caption']),
   },
   groupmembers: {
+    tier: 'groupLeader',
     operations: new Set(['create', 'patch', 'delete', 'bulkPatch']),
     fields: new Set(['GroupId', 'PersonId', 'GroupRoleId', 'GroupMemberStatus']),
   },
   attendances: {
-    operations: new Set(['create', 'patch', 'bulkPatch']),
-    fields: new Set(['OccurrenceId', 'PersonAliasId', 'DidAttend', 'StartDateTime', 'CampusId']),
+    tier: 'groupLeader',
+    operations: new Set(['create', 'patch', 'delete', 'bulkPatch']),
+    fields: new Set(['OccurrenceId', 'PersonAliasId', 'DidAttend', 'StartDateTime', 'CampusId', 'ScheduledToAttend', 'RSVP']),
   },
   attendanceoccurrences: {
+    tier: 'groupLeader',
     operations: new Set(['create']),
     fields: new Set(['GroupId', 'OccurrenceDate', 'ScheduleId', 'LocationId']),
   },
   connectionrequests: {
+    tier: 'admin',
     operations: new Set(['create', 'patch', 'bulkPatch']),
     fields: new Set(['ConnectionOpportunityId', 'ConnectionStatusId', 'PersonAliasId', 'AssignedPersonAliasId', 'Comments']),
   },
   workflows: {
+    tier: 'admin',
     operations: new Set(['create', 'patch', 'bulkPatch']),
     fields: new Set(['WorkflowTypeId', 'Name', 'IsActive', 'ActivatedDateTime', 'Status', 'CompletedDateTime']),
   },
   workflowactivities: {
+    tier: 'admin',
     operations: new Set(['patch']),
     fields: new Set(['CompletedDateTime']),
   },
@@ -118,13 +130,25 @@ export function authorizeWrite(ctx: OAuthRockContext, desc: WriteDescriptor): Au
     }
   }
 
-  // 5. Check delete elevation (requires RSR admin)
-  if (desc.operation === 'delete' && !ctx.rockUser.isRsrAdmin) {
-    return {
-      allowed: false,
-      code: 'DELETE_REQUIRES_ADMIN',
-      reason: 'Delete operations require admin privileges.',
-    };
+  // 5. Check tier authorization (replaces the old blanket delete-requires-admin step;
+  //    identity is now enforced per-tier for EVERY operation, not just delete).
+  if (modelConfig.tier === 'admin') {
+    if (!ctx.rockUser.isRsrAdmin) {
+      return {
+        allowed: false,
+        code: 'ADMIN_REQUIRED',
+        reason: `Writes to model '${desc.model}' require admin privileges.`,
+      };
+    }
+  } else {
+    // 'groupLeader' tier: admin OR the resolved leader of the target group.
+    if (!(ctx.rockUser.isRsrAdmin || desc.callerIsTargetGroupLeader)) {
+      return {
+        allowed: false,
+        code: 'NOT_GROUP_LEADER',
+        reason: `Writes to model '${desc.model}' require admin privileges or active leadership of the target group.`,
+      };
+    }
   }
 
   // 6. Check bulk bounds

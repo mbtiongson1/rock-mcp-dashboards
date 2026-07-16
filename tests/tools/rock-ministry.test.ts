@@ -41,7 +41,9 @@ describe('rock_ministry tool', () => {
       discoveryService: mockDiscoveryService,
       datasetStore: mockDatasetStore,
       oauth: { subject: 'test-user' },
-      rockUser: { personId: 123 },
+      rockUser: { personId: 123, isRsrAdmin: true }, // groupmembers/attendances/attendanceoccurrences are groupLeader-tier;
+      // rock_ministry does not yet resolve callerIsTargetGroupLeader (Phase C), so admin identity keeps these
+      // plumbing tests isolated from the tier check.
       request: { sessionId: 'session-123' },
     } as unknown as OAuthRockContext;
   });

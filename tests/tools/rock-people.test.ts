@@ -42,7 +42,7 @@ describe('rock_people tool', () => {
       rockClient: mockClient,
       discoveryService: mockDiscoveryService,
       oauth: { subject: 'test-user' },
-      rockUser: { personId: 123 },
+      rockUser: { personId: 123, isRsrAdmin: true }, // people/phonenumbers/connectionrequests are admin-tier writes
       request: { sessionId: 'session-123' },
     } as unknown as OAuthRockContext;
   });

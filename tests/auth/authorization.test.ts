@@ -54,6 +54,7 @@ describe('authorizeWrite', () => {
     });
 
     it('should allow write with readwrite mode and write scope', () => {
+      mockCtx.rockUser!.isRsrAdmin = true;
       const desc: WriteDescriptor = {
         tool: 'rock_write',
         action: 'patch',
@@ -62,7 +63,7 @@ describe('authorizeWrite', () => {
         fields: ['Email'],
       };
       const result = authorizeWrite(mockCtx as OAuthRockContext, desc);
-      // Should pass mode/scope and field checks
+      // Should pass mode/scope, field, and tier checks
       expect(result.allowed).toBe(true);
     });
   });
@@ -106,6 +107,7 @@ describe('authorizeWrite', () => {
     });
 
     it('should normalize model names case-insensitively', () => {
+      mockCtx.rockUser!.isRsrAdmin = true;
       const desc: WriteDescriptor = {
         tool: 'rock_write',
         action: 'patch',
@@ -120,6 +122,7 @@ describe('authorizeWrite', () => {
 
   describe('field allowlist checks', () => {
     it('should allow fields in the allowlist for create', () => {
+      mockCtx.rockUser!.isRsrAdmin = true;
       const desc: WriteDescriptor = {
         tool: 'rock_people',
         action: 'updateContactInfo',
@@ -146,6 +149,7 @@ describe('authorizeWrite', () => {
     });
 
     it('should require fields to be provided for create/patch operations', () => {
+      mockCtx.rockUser!.isRsrAdmin = true;
       const desc: WriteDescriptor = {
         tool: 'rock_people',
         action: 'updateContactInfo',
@@ -159,6 +163,7 @@ describe('authorizeWrite', () => {
     });
 
     it('should allow only model-level validation for patchAttributes', () => {
+      mockCtx.rockUser!.isRsrAdmin = true;
       const desc: WriteDescriptor = {
         tool: 'rock_people',
         action: 'patchAttributes',
@@ -184,7 +189,7 @@ describe('authorizeWrite', () => {
   });
 
   describe('delete elevation', () => {
-    it('should deny delete to non-admins', () => {
+    it('should deny delete to non-admins (groupLeader tier, not the target leader)', () => {
       mockCtx.rockUser!.isRsrAdmin = false;
       const desc: WriteDescriptor = {
         tool: 'rock_write',
@@ -194,7 +199,20 @@ describe('authorizeWrite', () => {
       };
       const result = authorizeWrite(mockCtx as OAuthRockContext, desc);
       expect(result.allowed).toBe(false);
-      expect(result.code).toBe('DELETE_REQUIRES_ADMIN');
+      expect(result.code).toBe('NOT_GROUP_LEADER');
+    });
+
+    it('should allow delete to the target group leader even without admin', () => {
+      mockCtx.rockUser!.isRsrAdmin = false;
+      const desc: WriteDescriptor = {
+        tool: 'rock_write',
+        action: 'delete',
+        model: 'groupmembers',
+        operation: 'delete',
+        callerIsTargetGroupLeader: true,
+      };
+      const result = authorizeWrite(mockCtx as OAuthRockContext, desc);
+      expect(result.allowed).toBe(true);
     });
 
     it('should allow delete to admins', () => {
@@ -212,6 +230,7 @@ describe('authorizeWrite', () => {
 
   describe('bulk bounds', () => {
     it('should allow bulk patch at default limit (25)', () => {
+      mockCtx.rockUser!.isRsrAdmin = true;
       const desc: WriteDescriptor = {
         tool: 'rock_write',
         action: 'bulkPatch',
@@ -224,6 +243,7 @@ describe('authorizeWrite', () => {
     });
 
     it('should deny bulk patch over the limit', () => {
+      mockCtx.rockUser!.isRsrAdmin = true;
       const desc: WriteDescriptor = {
         tool: 'rock_write',
         action: 'bulkPatch',
@@ -237,6 +257,7 @@ describe('authorizeWrite', () => {
     });
 
     it('should respect ROCK_MCP_BULK_WRITE_MAX env var if set', () => {
+      mockCtx.rockUser!.isRsrAdmin = true;
       process.env.ROCK_MCP_BULK_WRITE_MAX = '10';
       const desc: WriteDescriptor = {
         tool: 'rock_write',
@@ -282,7 +303,7 @@ describe('authorizeWrite', () => {
       const desc: WriteDescriptor = {
         tool: 'rock_write',
         action: 'delete',
-        model: 'attendances',
+        model: 'notes',
         operation: 'delete',
       };
       const result = authorizeWrite(mockCtx as OAuthRockContext, desc);
@@ -293,6 +314,7 @@ describe('authorizeWrite', () => {
 
   describe('comprehensive scenarios', () => {
     it('should allow people patch with allowed fields', () => {
+      mockCtx.rockUser!.isRsrAdmin = true;
       const desc: WriteDescriptor = {
         tool: 'rock_people',
         action: 'updateContactInfo',
@@ -324,29 +346,37 @@ describe('authorizeWrite', () => {
         model: 'groupmembers',
         operation: 'create',
         fields: ['GroupId', 'PersonId', 'GroupRoleId'],
+        callerIsTargetGroupLeader: true,
       };
       const result = authorizeWrite(mockCtx as OAuthRockContext, desc);
       expect(result.allowed).toBe(true);
     });
 
-    it('should allow groupmembers delete only for admins', () => {
+    it('should allow groupmembers delete for admins or the target group leader, deny others', () => {
       mockCtx.rockUser!.isRsrAdmin = false;
-      let desc: WriteDescriptor = {
+      const desc: WriteDescriptor = {
         tool: 'rock_ministry',
         action: 'removeGroupMember',
         model: 'groupmembers',
         operation: 'delete',
       };
+      // Non-admin, not the target leader -> denied
       let result = authorizeWrite(mockCtx as OAuthRockContext, desc);
       expect(result.allowed).toBe(false);
-      expect(result.code).toBe('DELETE_REQUIRES_ADMIN');
+      expect(result.code).toBe('NOT_GROUP_LEADER');
 
+      // Non-admin, but the target group leader -> allowed
+      result = authorizeWrite(mockCtx as OAuthRockContext, { ...desc, callerIsTargetGroupLeader: true });
+      expect(result.allowed).toBe(true);
+
+      // Admin -> allowed regardless of leader status
       mockCtx.rockUser!.isRsrAdmin = true;
       result = authorizeWrite(mockCtx as OAuthRockContext, desc);
       expect(result.allowed).toBe(true);
     });
 
     it('should allow connectionrequests patch with allowed fields', () => {
+      mockCtx.rockUser!.isRsrAdmin = true;
       const desc: WriteDescriptor = {
         tool: 'rock_workflow',
         action: 'updateConnectionRequest',
@@ -359,6 +389,7 @@ describe('authorizeWrite', () => {
     });
 
     it('should allow workflows create with allowed fields', () => {
+      mockCtx.rockUser!.isRsrAdmin = true;
       const desc: WriteDescriptor = {
         tool: 'rock_workflow',
         action: 'launchWorkflow',
@@ -371,6 +402,7 @@ describe('authorizeWrite', () => {
     });
 
     it('should allow workflowactivities patch with allowed fields', () => {
+      mockCtx.rockUser!.isRsrAdmin = true;
       const desc: WriteDescriptor = {
         tool: 'rock_workflow',
         action: 'completeAction',
@@ -383,6 +415,7 @@ describe('authorizeWrite', () => {
     });
 
     it('should allow phonenumbers create with allowed fields', () => {
+      mockCtx.rockUser!.isRsrAdmin = true;
       const desc: WriteDescriptor = {
         tool: 'rock_people',
         action: 'updateContactInfo',
@@ -395,6 +428,7 @@ describe('authorizeWrite', () => {
     });
 
     it('should allow phonenumbers patch with allowed fields', () => {
+      mockCtx.rockUser!.isRsrAdmin = true;
       const desc: WriteDescriptor = {
         tool: 'rock_people',
         action: 'updateContactInfo',
@@ -417,6 +451,132 @@ describe('authorizeWrite', () => {
       const result = authorizeWrite(mockCtx as OAuthRockContext, desc);
       expect(result.allowed).toBe(false);
       expect(result.code).toBe('FIELD_NOT_ALLOWED');
+    });
+  });
+
+  describe('tier authorization', () => {
+    it('admin-tier denies non-admin (people patch)', () => {
+      mockCtx.rockUser!.isRsrAdmin = false;
+      const desc: WriteDescriptor = {
+        tool: 'rock_write',
+        action: 'patch',
+        model: 'people',
+        operation: 'patch',
+        fields: ['Email'],
+      };
+      const result = authorizeWrite(mockCtx as OAuthRockContext, desc);
+      expect(result.allowed).toBe(false);
+      expect(result.code).toBe('ADMIN_REQUIRED');
+    });
+
+    it('admin-tier allows admin (people patch)', () => {
+      mockCtx.rockUser!.isRsrAdmin = true;
+      const desc: WriteDescriptor = {
+        tool: 'rock_write',
+        action: 'patch',
+        model: 'people',
+        operation: 'patch',
+        fields: ['Email'],
+      };
+      const result = authorizeWrite(mockCtx as OAuthRockContext, desc);
+      expect(result.allowed).toBe(true);
+    });
+
+    it('groupLeader-tier allows admin with no callerIsTargetGroupLeader (groupmembers create)', () => {
+      mockCtx.rockUser!.isRsrAdmin = true;
+      const desc: WriteDescriptor = {
+        tool: 'rock_ministry',
+        action: 'addOrUpdateGroupMember',
+        model: 'groupmembers',
+        operation: 'create',
+        fields: ['GroupId', 'PersonId'],
+      };
+      const result = authorizeWrite(mockCtx as OAuthRockContext, desc);
+      expect(result.allowed).toBe(true);
+    });
+
+    it('groupLeader-tier allows the target group leader (groupmembers create)', () => {
+      mockCtx.rockUser!.isRsrAdmin = false;
+      const desc: WriteDescriptor = {
+        tool: 'rock_ministry',
+        action: 'addOrUpdateGroupMember',
+        model: 'groupmembers',
+        operation: 'create',
+        fields: ['GroupId', 'PersonId'],
+        callerIsTargetGroupLeader: true,
+      };
+      const result = authorizeWrite(mockCtx as OAuthRockContext, desc);
+      expect(result.allowed).toBe(true);
+    });
+
+    it('groupLeader-tier denies a non-admin non-leader (groupmembers create)', () => {
+      mockCtx.rockUser!.isRsrAdmin = false;
+      const desc: WriteDescriptor = {
+        tool: 'rock_ministry',
+        action: 'addOrUpdateGroupMember',
+        model: 'groupmembers',
+        operation: 'create',
+        fields: ['GroupId', 'PersonId'],
+        callerIsTargetGroupLeader: false,
+      };
+      const result = authorizeWrite(mockCtx as OAuthRockContext, desc);
+      expect(result.allowed).toBe(false);
+      expect(result.code).toBe('NOT_GROUP_LEADER');
+    });
+
+    it('groupLeader-tier fails closed when callerIsTargetGroupLeader is omitted (groupmembers create)', () => {
+      mockCtx.rockUser!.isRsrAdmin = false;
+      const desc: WriteDescriptor = {
+        tool: 'rock_ministry',
+        action: 'addOrUpdateGroupMember',
+        model: 'groupmembers',
+        operation: 'create',
+        fields: ['GroupId', 'PersonId'],
+        // callerIsTargetGroupLeader intentionally omitted
+      };
+      const result = authorizeWrite(mockCtx as OAuthRockContext, desc);
+      expect(result.allowed).toBe(false);
+      expect(result.code).toBe('NOT_GROUP_LEADER');
+    });
+
+    it('groupLeader-tier delete: allowed for the target leader, denied otherwise (attendances delete)', () => {
+      mockCtx.rockUser!.isRsrAdmin = false;
+      const desc: WriteDescriptor = {
+        tool: 'rock_ministry',
+        action: 'unscheduleAttendance',
+        model: 'attendances',
+        operation: 'delete',
+        callerIsTargetGroupLeader: true,
+      };
+      let result = authorizeWrite(mockCtx as OAuthRockContext, desc);
+      expect(result.allowed).toBe(true);
+
+      result = authorizeWrite(mockCtx as OAuthRockContext, { ...desc, callerIsTargetGroupLeader: false });
+      expect(result.allowed).toBe(false);
+      expect(result.code).toBe('NOT_GROUP_LEADER');
+    });
+
+    it('attendances allows the new ScheduledToAttend/RSVP fields and still rejects bogus fields', () => {
+      mockCtx.rockUser!.isRsrAdmin = false;
+      const desc: WriteDescriptor = {
+        tool: 'rock_ministry',
+        action: 'scheduleAttendance',
+        model: 'attendances',
+        operation: 'create',
+        fields: ['OccurrenceId', 'PersonAliasId', 'ScheduledToAttend', 'RSVP'],
+        callerIsTargetGroupLeader: true,
+      };
+      const result = authorizeWrite(mockCtx as OAuthRockContext, desc);
+      expect(result.allowed).toBe(true);
+
+      const badDesc: WriteDescriptor = {
+        ...desc,
+        operation: 'patch',
+        fields: ['ScheduledToAttend', 'BogusField'],
+      };
+      const badResult = authorizeWrite(mockCtx as OAuthRockContext, badDesc);
+      expect(badResult.allowed).toBe(false);
+      expect(badResult.code).toBe('FIELD_NOT_ALLOWED');
     });
   });
 });
