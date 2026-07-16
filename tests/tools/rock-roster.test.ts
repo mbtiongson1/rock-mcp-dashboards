@@ -664,24 +664,278 @@ describe('rock_roster tool', () => {
     });
   });
 
-  describe('unschedule stub (implemented in B4)', () => {
-    it('unschedule returns NOT_IMPLEMENTED', async () => {
+  describe('unschedule (write, groupLeader tier)', () => {
+    it('a leader can preview (dryRun default) unscheduling from their own led group; no delete/patch', async () => {
+      const ctx = {
+        ...mockCtx,
+        rockUser: { personId: 5, isRsrAdmin: false, isStaff: false, ledGroupIds: [42] },
+      };
+      mockClient.get.mockImplementation((_ctx: any, path: string) => {
+        if (path.includes('/api/AttendanceOccurrences')) return Promise.resolve([{ Id: 900 }]);
+        if (path.includes('/api/Attendances')) return Promise.resolve([{ Id: 55 }]);
+        return Promise.reject(new Error(`unexpected path: ${path}`));
+      });
+
       const result = await rockRosterTool.handle(
         {
           action: 'unschedule',
           groupId: 42,
-          personId: 200,
+          personAliasId: 5001,
           locationId: 10,
           scheduleId: 100,
           date: '2026-07-19',
           reason: 'test',
         },
         null,
-        mockCtx
+        ctx
       );
       const response = JSON.parse(result.content[0].text!);
+
+      expect(response.ok).toBe(true);
+      expect(response.result.dryRun).toBe(true);
+      expect(response.result.committed).toBe(false);
+      expect(response.result.targetAttendanceId).toBe(55);
+      expect(mockClient.delete).not.toHaveBeenCalled();
+      expect(mockClient.patch).not.toHaveBeenCalled();
+    });
+
+    it('denies a leader unscheduling from a group they do NOT lead', async () => {
+      const ctx = {
+        ...mockCtx,
+        rockUser: { personId: 5, isRsrAdmin: false, isStaff: false, ledGroupIds: [42] },
+      };
+      mockClient.get.mockImplementation((_ctx: any, path: string) => {
+        if (path.includes('/api/AttendanceOccurrences')) return Promise.resolve([{ Id: 900 }]);
+        if (path.includes('/api/Attendances')) return Promise.resolve([{ Id: 55 }]);
+        return Promise.reject(new Error(`unexpected path: ${path}`));
+      });
+
+      const result = await rockRosterTool.handle(
+        {
+          action: 'unschedule',
+          groupId: 99,
+          personAliasId: 5001,
+          locationId: 10,
+          scheduleId: 100,
+          date: '2026-07-19',
+          commit: true,
+          dryRun: false,
+          reason: 'test',
+        },
+        null,
+        ctx
+      );
+      const response = JSON.parse(result.content[0].text!);
+
       expect(response.ok).toBe(false);
-      expect(response.error.code).toBe('NOT_IMPLEMENTED');
+      expect(response.error.code).toBe('NOT_GROUP_LEADER');
+      expect(mockClient.delete).not.toHaveBeenCalled();
+      expect(mockClient.patch).not.toHaveBeenCalled();
+    });
+
+    it('an admin can commit: deletes the attendance (v2) and reports method:deleted', async () => {
+      const ctx = {
+        ...mockCtx,
+        rockUser: { personId: 1, isRsrAdmin: true, isStaff: true, ledGroupIds: [] },
+      };
+      mockClient.get.mockImplementation((_ctx: any, path: string) => {
+        if (path.includes('/api/AttendanceOccurrences')) return Promise.resolve([{ Id: 900 }]);
+        if (path.includes('/api/Attendances')) return Promise.resolve([{ Id: 55 }]);
+        return Promise.reject(new Error(`unexpected path: ${path}`));
+      });
+      mockClient.delete.mockResolvedValue(undefined);
+
+      const result = await rockRosterTool.handle(
+        {
+          action: 'unschedule',
+          groupId: 42,
+          personAliasId: 5001,
+          locationId: 10,
+          scheduleId: 100,
+          date: '2026-07-19',
+          commit: true,
+          dryRun: false,
+          reason: 'test',
+        },
+        null,
+        ctx
+      );
+      const response = JSON.parse(result.content[0].text!);
+
+      expect(response.ok).toBe(true);
+      expect(response.result.committed).toBe(true);
+      expect(response.result.method).toBe('deleted');
+      expect(response.result.targetAttendanceId).toBe(55);
+      expect(mockClient.delete).toHaveBeenCalledWith(ctx, '/api/v2/models/attendances/55');
+      expect(mockClient.patch).not.toHaveBeenCalled();
+    });
+
+    it('falls back to inactivating (PATCH) when DELETE fails on both v2 and v1', async () => {
+      const ctx = {
+        ...mockCtx,
+        rockUser: { personId: 1, isRsrAdmin: true, isStaff: true, ledGroupIds: [] },
+      };
+      mockClient.get.mockImplementation((_ctx: any, path: string) => {
+        if (path.includes('/api/AttendanceOccurrences')) return Promise.resolve([{ Id: 900 }]);
+        if (path.includes('/api/Attendances')) return Promise.resolve([{ Id: 55 }]);
+        return Promise.reject(new Error(`unexpected path: ${path}`));
+      });
+      mockClient.delete.mockRejectedValue(new Error('delete not supported'));
+      mockClient.patch.mockResolvedValue({ Id: 55 });
+
+      const result = await rockRosterTool.handle(
+        {
+          action: 'unschedule',
+          groupId: 42,
+          personAliasId: 5001,
+          locationId: 10,
+          scheduleId: 100,
+          date: '2026-07-19',
+          commit: true,
+          dryRun: false,
+          reason: 'test',
+        },
+        null,
+        ctx
+      );
+      const response = JSON.parse(result.content[0].text!);
+
+      expect(response.ok).toBe(true);
+      expect(response.result.committed).toBe(true);
+      expect(response.result.method).toBe('inactivated');
+      expect(response.result.targetAttendanceId).toBe(55);
+      expect(mockClient.delete).toHaveBeenCalledTimes(2); // v2 then v1, both rejected
+      expect(mockClient.patch).toHaveBeenCalledWith(
+        ctx,
+        '/api/v2/models/attendances/55',
+        expect.objectContaining({ ScheduledToAttend: false, RSVP: 0 })
+      );
+    });
+
+    it('is an idempotent no-op when no matching occurrence exists; no mutation', async () => {
+      const ctx = {
+        ...mockCtx,
+        rockUser: { personId: 1, isRsrAdmin: true, isStaff: true, ledGroupIds: [] },
+      };
+      mockClient.get.mockImplementation((_ctx: any, path: string) => {
+        if (path.includes('/api/AttendanceOccurrences')) return Promise.resolve([]);
+        return Promise.reject(new Error(`unexpected path: ${path}`));
+      });
+
+      const result = await rockRosterTool.handle(
+        {
+          action: 'unschedule',
+          groupId: 42,
+          personAliasId: 5001,
+          locationId: 10,
+          scheduleId: 100,
+          date: '2026-07-19',
+          commit: true,
+          dryRun: false,
+          reason: 'test',
+        },
+        null,
+        ctx
+      );
+      const response = JSON.parse(result.content[0].text!);
+
+      expect(response.ok).toBe(true);
+      expect(response.result.noop).toBe(true);
+      expect(response.result.committed).toBe(false);
+      expect(mockClient.delete).not.toHaveBeenCalled();
+      expect(mockClient.patch).not.toHaveBeenCalled();
+    });
+
+    it('is an idempotent no-op when the occurrence exists but no matching attendance exists; no mutation', async () => {
+      const ctx = {
+        ...mockCtx,
+        rockUser: { personId: 1, isRsrAdmin: true, isStaff: true, ledGroupIds: [] },
+      };
+      mockClient.get.mockImplementation((_ctx: any, path: string) => {
+        if (path.includes('/api/AttendanceOccurrences')) return Promise.resolve([{ Id: 900 }]);
+        if (path.includes('/api/Attendances')) return Promise.resolve([]);
+        return Promise.reject(new Error(`unexpected path: ${path}`));
+      });
+
+      const result = await rockRosterTool.handle(
+        {
+          action: 'unschedule',
+          groupId: 42,
+          personAliasId: 5001,
+          locationId: 10,
+          scheduleId: 100,
+          date: '2026-07-19',
+          commit: true,
+          dryRun: false,
+          reason: 'test',
+        },
+        null,
+        ctx
+      );
+      const response = JSON.parse(result.content[0].text!);
+
+      expect(response.ok).toBe(true);
+      expect(response.result.noop).toBe(true);
+      expect(response.result.committed).toBe(false);
+      expect(mockClient.delete).not.toHaveBeenCalled();
+      expect(mockClient.patch).not.toHaveBeenCalled();
+    });
+
+    it('never puts RSVP or ScheduledToAttend inside the attendance lookup $filter', async () => {
+      const ctx = {
+        ...mockCtx,
+        rockUser: { personId: 1, isRsrAdmin: true, isStaff: true, ledGroupIds: [] },
+      };
+      mockClient.get.mockImplementation((_ctx: any, path: string) => {
+        if (path.includes('/api/AttendanceOccurrences')) return Promise.resolve([{ Id: 900 }]);
+        if (path.includes('/api/Attendances')) return Promise.resolve([{ Id: 55 }]);
+        return Promise.reject(new Error(`unexpected path: ${path}`));
+      });
+
+      await rockRosterTool.handle(
+        {
+          action: 'unschedule',
+          groupId: 42,
+          personAliasId: 5001,
+          locationId: 10,
+          scheduleId: 100,
+          date: '2026-07-19',
+          reason: 'test',
+        },
+        null,
+        ctx
+      );
+
+      const attendanceCall = mockClient.get.mock.calls.find((call: any[]) => (call[1] as string).includes('/api/Attendances?'));
+      expect(attendanceCall).toBeDefined();
+      const path = attendanceCall![1] as string;
+      expect(path).toMatch(/OccurrenceId eq/);
+      expect(path).toMatch(/PersonAliasId eq/);
+      expect(path).not.toMatch(/RSVP/);
+      expect(path).not.toMatch(/ScheduledToAttend/);
+    });
+
+    it('returns UNAUTHORIZED when called in readonly mode (defense in depth)', async () => {
+      const ctx = { ...mockCtx, mode: 'readonly', scopes: new Set(['read']) };
+
+      const result = await rockRosterTool.handle(
+        {
+          action: 'unschedule',
+          groupId: 42,
+          personAliasId: 5001,
+          locationId: 10,
+          scheduleId: 100,
+          date: '2026-07-19',
+          reason: 'test',
+        },
+        null,
+        ctx
+      );
+      const response = JSON.parse(result.content[0].text!);
+
+      expect(response.ok).toBe(false);
+      expect(response.error.code).toBe('UNAUTHORIZED');
+      expect(mockClient.get).not.toHaveBeenCalled();
     });
   });
 

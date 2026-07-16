@@ -17,9 +17,6 @@ const RSVP_NO = 0;
 const RSVP_YES = 1;
 const RSVP_MAYBE = 2;
 const RSVP_UNKNOWN = 3;
-// RSVP_NO is only referenced by the (stubbed) unschedule action today; keep it
-// documented in the enum even though it has no live call site yet.
-void RSVP_NO;
 
 const RSVP_LABELS: Record<number, string> = {
   [RSVP_NO]: 'No',
@@ -746,12 +743,230 @@ export const rockRosterTool: GatewayTool = {
     }
 
     if (parsed.action === 'unschedule') {
-      // WRITE logic implemented in a later task (B4). Stubbed here so the schema
-      // advertises all 4 actions now, without applying any mutation.
-      return formatResponse(parsed.action, ctx, null, {
-        code: 'NOT_IMPLEMENTED',
-        message: `Action ${parsed.action} is implemented in a later task.`,
+      const {
+        groupId,
+        personAliasId,
+        personId,
+        personName,
+        locationId,
+        roleName,
+        scheduleId,
+        serviceName,
+        date,
+        dryRun,
+        commit,
+        reason,
+      } = parsed;
+
+      // 1. Inline mode/scope gate (mirrors schedule/removeGroupMember).
+      if (ctx.mode !== 'readwrite' || !ctx.scopes.has('write')) {
+        return formatResponse(parsed.action, ctx, null, {
+          code: 'UNAUTHORIZED',
+          message: 'Write actions disallowed in readonly mode.',
+        });
+      }
+
+      // 2. Resolve person/role/service → ids. Reuse B3's shared resolver. These are
+      // read-only lookups, so resolution failures (not-found/ambiguous) may run before authz.
+      const resolved = await resolveScheduleTarget(rockClient, ctx, groupId, {
+        personAliasId,
+        personId,
+        personName,
+        locationId,
+        roleName,
+        scheduleId,
+        serviceName,
       });
+      if ('error' in resolved) {
+        return formatResponse(parsed.action, ctx, null, resolved.error);
+      }
+      const resolvedPersonAliasId = resolved.personAliasId;
+      const resolvedLocationId = resolved.locationId;
+      const resolvedScheduleId = resolved.scheduleId;
+
+      const formattedDate = `${date}T00:00:00`;
+
+      try {
+        // 3. Resolve the occurrence + attendance to remove. Missing either is an
+        // idempotent no-op — nothing to unschedule, so no authz check and no mutation.
+        const occurrences = await rockClient.get<any[]>(
+          ctx,
+          `/api/AttendanceOccurrences?$filter=GroupId eq ${groupId} and LocationId eq ${resolvedLocationId} and ScheduleId eq ${resolvedScheduleId} and OccurrenceDate eq datetime'${formattedDate}'`
+        );
+
+        if (!occurrences || occurrences.length === 0) {
+          auditLogger.log(ctx, {
+            tool: 'rock_roster',
+            action: parsed.action,
+            target: { model: 'attendanceoccurrences', id: groupId },
+            dryRun,
+            commit,
+            reason,
+            outcome: 'allowed',
+          });
+          return formatResponse(parsed.action, ctx, {
+            committed: false,
+            noop: true,
+            note: 'No matching occurrence; nothing to unschedule.',
+          });
+        }
+        const occurrenceId = occurrences[0].Id;
+
+        // NEVER filter on RSVP/ScheduledToAttend — Rock 400s on enum-vs-int/string mismatches.
+        const existingAtt = await rockClient.get<any[]>(
+          ctx,
+          `/api/Attendances?$filter=OccurrenceId eq ${occurrenceId} and PersonAliasId eq ${resolvedPersonAliasId}`
+        );
+
+        if (!existingAtt || existingAtt.length === 0) {
+          auditLogger.log(ctx, {
+            tool: 'rock_roster',
+            action: parsed.action,
+            target: { model: 'attendances', id: occurrenceId },
+            dryRun,
+            commit,
+            reason,
+            outcome: 'allowed',
+          });
+          return formatResponse(parsed.action, ctx, {
+            committed: false,
+            noop: true,
+            note: 'No matching attendance; nothing to unschedule.',
+          });
+        }
+        const targetAttendanceId = existingAtt[0].Id;
+
+        // 4. Compute leadership + authorize the DELETE. Only reached when there IS an
+        // attendance to remove.
+        const callerIsTargetGroupLeader = ctx.rockUser.isRsrAdmin || ctx.rockUser.ledGroupIds.includes(groupId);
+
+        const deleteAuthz = authorizeWrite(ctx, {
+          tool: 'rock_roster',
+          action: parsed.action,
+          model: 'attendances',
+          operation: 'delete',
+          groupId,
+          callerIsTargetGroupLeader,
+        });
+        if (!deleteAuthz.allowed) {
+          auditLogger.log(ctx, {
+            tool: 'rock_roster',
+            action: parsed.action,
+            target: { model: 'attendances', id: targetAttendanceId },
+            dryRun,
+            commit,
+            reason,
+            outcome: 'denied',
+            errorCode: deleteAuthz.code,
+          });
+          return formatResponse(parsed.action, ctx, null, {
+            code: deleteAuthz.code || 'AUTHORIZATION_DENIED',
+            message: deleteAuthz.reason || 'Authorization denied.',
+          });
+        }
+
+        // 5. dryRun preview — no mutation.
+        const shouldMutate = commit && !dryRun;
+        if (!shouldMutate) {
+          auditLogger.log(ctx, {
+            tool: 'rock_roster',
+            action: parsed.action,
+            target: { model: 'attendances', id: targetAttendanceId },
+            dryRun: true,
+            commit: false,
+            reason,
+            outcome: 'allowed',
+          });
+          return formatResponse(parsed.action, ctx, {
+            dryRun: true,
+            committed: false,
+            targetAttendanceId,
+            occurrenceId,
+            plannedAction: 'delete-with-inactivate-fallback',
+          });
+        }
+
+        // 6. Commit — delete (v2 then v1), falling back to inactivation on failure.
+        try {
+          try {
+            await rockClient.delete(ctx, `/api/v2/models/attendances/${targetAttendanceId}`);
+          } catch {
+            await rockClient.delete(ctx, `/api/Attendances/${targetAttendanceId}`);
+          }
+
+          auditLogger.log(ctx, {
+            tool: 'rock_roster',
+            action: parsed.action,
+            target: { model: 'attendances', id: targetAttendanceId },
+            dryRun: false,
+            commit: true,
+            reason,
+            outcome: 'success',
+          });
+          return formatResponse(parsed.action, ctx, { committed: true, method: 'deleted', targetAttendanceId });
+        } catch {
+          // DELETE failed on both v2 and v1 → fall back to inactivating the attendance.
+          // Re-authorize for the patch operation before mutating.
+          const patchAuthz = authorizeWrite(ctx, {
+            tool: 'rock_roster',
+            action: parsed.action,
+            model: 'attendances',
+            operation: 'patch',
+            fields: ['ScheduledToAttend', 'RSVP'],
+            groupId,
+            callerIsTargetGroupLeader,
+          });
+          if (!patchAuthz.allowed) {
+            auditLogger.log(ctx, {
+              tool: 'rock_roster',
+              action: parsed.action,
+              target: { model: 'attendances', id: targetAttendanceId },
+              dryRun: false,
+              commit: true,
+              reason,
+              outcome: 'denied',
+              errorCode: patchAuthz.code,
+            });
+            return formatResponse(parsed.action, ctx, null, {
+              code: patchAuthz.code || 'AUTHORIZATION_DENIED',
+              message: patchAuthz.reason || 'Authorization denied.',
+            });
+          }
+
+          const patchPayload = { ScheduledToAttend: false, RSVP: RSVP_NO };
+          try {
+            await rockClient.patch(ctx, `/api/v2/models/attendances/${targetAttendanceId}`, patchPayload);
+          } catch {
+            await rockClient.patch(ctx, `/api/Attendances/${targetAttendanceId}`, patchPayload);
+          }
+
+          auditLogger.log(ctx, {
+            tool: 'rock_roster',
+            action: parsed.action,
+            target: { model: 'attendances', id: targetAttendanceId },
+            dryRun: false,
+            commit: true,
+            reason,
+            outcome: 'success',
+          });
+          return formatResponse(parsed.action, ctx, { committed: true, method: 'inactivated', targetAttendanceId });
+        }
+      } catch (err: any) {
+        auditLogger.log(ctx, {
+          tool: 'rock_roster',
+          action: parsed.action,
+          target: { model: 'attendances', id: groupId },
+          dryRun: false,
+          commit: true,
+          reason,
+          outcome: 'error',
+          errorCode: 'UNSCHEDULE_ERROR',
+        });
+        return formatResponse(parsed.action, ctx, null, {
+          code: 'UNSCHEDULE_ERROR',
+          message: err.message,
+        });
+      }
     }
 
     const actionName = (parsed as any).action;
