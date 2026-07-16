@@ -7,6 +7,7 @@ import { rockReportTool } from './rock-report.js';
 import { rockWorkflowTool } from './rock-workflow.js';
 import { rockWriteTool } from './rock-write.js';
 import { rockRosterTool } from './rock-roster.js';
+import { rockBatchTool } from './rock-batch.js';
 
 export const allTools = [
   rockUsageTool,
@@ -18,4 +19,5 @@ export const allTools = [
   rockWorkflowTool,
   rockWriteTool,
   rockRosterTool,
+  rockBatchTool,
 ];
