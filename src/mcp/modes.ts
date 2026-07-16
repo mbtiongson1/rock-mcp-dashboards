@@ -19,9 +19,10 @@ export class PersonResolutionError extends Error {
 }
 
 /**
- * Thrown when an authenticated, Rock-linked caller is neither a staff member
- * nor an administrator. MCP access is restricted to staff and admins; everyone
- * else is denied (403) on every endpoint.
+ * Thrown when an authenticated, Rock-linked caller is neither a staff member,
+ * nor an administrator, nor an active group leader. MCP access is restricted
+ * to staff, admins, and active group leaders; everyone else is denied (403)
+ * on every endpoint.
  */
 export class AccessDeniedError extends Error {
   constructor(message: string, public email?: string) {

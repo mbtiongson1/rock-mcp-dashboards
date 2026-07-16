@@ -114,16 +114,20 @@ export async function handleMcpPost(
       );
     }
 
-    // Login gate: MCP access is restricted to Rock staff and administrators.
-    // A linked person who is neither is denied here, on every endpoint, before
-    // any tool is registered or any mode is resolved. Both `isStaff` and
-    // `isRsrAdmin` are determined from the user's own forwarded token and fail
-    // closed (false) on any Rock lookup failure, so this gate fails closed too.
-    if (!resolvedUser.isRsrAdmin && !resolvedUser.isStaff) {
+    // Login gate: MCP access is restricted to Rock staff, administrators, and
+    // active group leaders. A linked person who is none of these is denied
+    // here, on every endpoint, before any tool is registered or any mode is
+    // resolved. `isStaff`, `isRsrAdmin`, and `ledGroupIds` are all determined
+    // from the user's own forwarded token and fail closed (false / []) on any
+    // Rock lookup failure, so this gate fails closed too. `ledGroupIds` was
+    // already computed during user resolution above — this reuses that result
+    // rather than issuing a new Rock call.
+    const leadsAnyGroup = resolvedUser.ledGroupIds.length > 0;
+    if (!resolvedUser.isRsrAdmin && !resolvedUser.isStaff && !leadsAnyGroup) {
       const email = ctx.oauth.email || ctx.oauth.subject;
       const orgName = process.env.ORGANIZATION_NAME || 'Favor Church';
       throw new AccessDeniedError(
-        `Access to this MCP is restricted to ${orgName} staff and Rock administrators. Your account (${email}) is not a recognized staff member or administrator.`,
+        `Access to this MCP is restricted to ${orgName} staff, Rock administrators, and active group leaders. Your account (${email}) is not a recognized staff member, administrator, or group leader.`,
         email
       );
     }

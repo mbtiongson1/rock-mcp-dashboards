@@ -58,6 +58,7 @@ const stubResolver = {
     personGuid: 'a0000000-0000-0000-0000-000000000100',
     personAliasId: 100,
     isRsrAdmin: true,
+    ledGroupIds: [],
   }),
 } as unknown as RockUserResolver;
 
@@ -430,6 +431,27 @@ describe('handleMcpPost', () => {
       await handleMcpPost(listRequest(), 'readonly', optionsWith(['read'], {}));
       expect(logSpy.mock.calls.some((c) => c[1].errorCode === 'ACCESS_DENIED')).toBe(true);
       logSpy.mockRestore();
+    });
+
+    // ---- Non-staff, non-admin GROUP LEADER: admitted through the connect gate ----
+    it('admits a non-staff non-admin active group leader on the readonly endpoint (200)', async () => {
+      const response = await handleMcpPost(
+        listRequest(),
+        'readonly',
+        optionsWith(['read'], { ledGroupIds: [5] })
+      );
+      expect(response.status).toBe(200);
+      const json = parseMcpBody(await readBody(response));
+      expect(json.result?.tools.length).toBeGreaterThan(0);
+    });
+
+    it('admits a non-staff non-admin active group leader on the auto endpoint (200)', async () => {
+      const response = await handleMcpPost(
+        listRequest(),
+        'mcp',
+        optionsWith(['read'], { ledGroupIds: [5] })
+      );
+      expect(response.status).toBe(200);
     });
 
     // ---- Staff worker: read-only access ----
