@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { quoteLinqString, quoteODataString, assertValidGuid } from '../../src/rock/query.js';
+import { quoteLinqString, quoteODataString, assertValidGuid, linqToOData } from '../../src/rock/query.js';
 
 describe('query sanitization', () => {
   describe('quoteLinqString', () => {
@@ -59,6 +59,67 @@ describe('query sanitization', () => {
 
     it('should handle OData operators', () => {
       expect(quoteODataString('eq ne and or')).toBe("'eq ne and or'");
+    });
+  });
+
+  describe('linqToOData', () => {
+    it('returns empty string for undefined/empty input', () => {
+      expect(linqToOData()).toBe('');
+      expect(linqToOData('')).toBe('');
+    });
+
+    it('translates equality operators', () => {
+      expect(linqToOData('PrimaryCampusId == 2')).toBe('PrimaryCampusId eq 2');
+      expect(linqToOData('IsActive != true')).toBe('IsActive ne true');
+    });
+
+    it('translates logical operators', () => {
+      expect(linqToOData('A == 1 && B == 2')).toBe('A eq 1 and B eq 2');
+      expect(linqToOData('A == 1 || B == 2')).toBe('A eq 1 or B eq 2');
+    });
+
+    // Regression: rock_entity search on Attendances with a range filter 400'd
+    // ("character '>' is not valid") because >=/<= were never translated.
+    it('translates relational operators, two-char forms before single-char', () => {
+      expect(linqToOData('OccurrenceId >= 34885 && OccurrenceId <= 34899')).toBe(
+        'OccurrenceId ge 34885 and OccurrenceId le 34899'
+      );
+      expect(linqToOData('Age > 18')).toBe('Age gt 18');
+      expect(linqToOData('Age < 65')).toBe('Age lt 65');
+    });
+
+    // Regression: `.Contains()` reached Rock verbatim → "unknown function 'Name.Contains'".
+    it('translates .Contains() to substringof(...) eq true', () => {
+      expect(linqToOData('Name.Contains("No Names")')).toBe(
+        "substringof('No Names', Name) eq true"
+      );
+    });
+
+    it('translates .StartsWith() and .EndsWith()', () => {
+      expect(linqToOData('Name.StartsWith("Youth")')).toBe(
+        "startswith(Name, 'Youth') eq true"
+      );
+      expect(linqToOData('Name.EndsWith("Team")')).toBe(
+        "endswith(Name, 'Team') eq true"
+      );
+    });
+
+    it('handles a dotted navigation path in a method call', () => {
+      expect(linqToOData('Person.NickName.Contains("Jo")')).toBe(
+        "substringof('Jo', Person.NickName) eq true"
+      );
+    });
+
+    // Regression: an MCP client sent HTML-escaped quotes → "character '&' is not valid".
+    it('decodes HTML entities before translating', () => {
+      expect(linqToOData('Name.Contains(&quot;No Names&quot;)')).toBe(
+        "substringof('No Names', Name) eq true"
+      );
+      expect(linqToOData('A == 1 &amp;&amp; B == 2')).toBe('A eq 1 and B eq 2');
+    });
+
+    it('converts double-quoted string literals to single-quoted and escapes single quotes', () => {
+      expect(linqToOData('LastName == "O\'Brien"')).toBe("LastName eq 'O''Brien'");
     });
   });
 

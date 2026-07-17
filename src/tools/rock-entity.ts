@@ -3,8 +3,47 @@ import { GatewayTool, McpToolResult } from './types.js';
 import { McpMode, McpScope } from '../mcp/modes.js';
 import { OAuthRockContext } from '../http/oauth.js';
 import { formatResponse } from './formatter.js';
-import { RockClient } from '../rock/client.js';
-import { escapeODataString } from '../rock/query.js';
+import { RockClient, RockApiError } from '../rock/client.js';
+import { linqToOData } from '../rock/query.js';
+
+/**
+ * Describe a v2 -> v1 fallback double-failure for the caller. The v2 error is
+ * otherwise discarded, so include the status of BOTH attempts; also surface a
+ * sanitized reason from Rock's response when it is safe to (see `safeReason`).
+ */
+function describeFallbackFailure(label: string, v2Err: unknown, v1Err: unknown): string {
+  const base = `${label} failed on v2 and v1 (v2: ${statusOf(v2Err)}, v1: ${statusOf(v1Err)})`;
+  const reason = safeReason(v1Err) ?? safeReason(v2Err);
+  return reason ? `${base}: ${reason}` : base;
+}
+
+function statusOf(err: unknown): string {
+  if (err instanceof RockApiError) return `${err.status} ${err.statusText}`;
+  if (err instanceof Error) return err.message;
+  return String(err);
+}
+
+/**
+ * Extract a safe, human-readable reason from a Rock response. Only 4xx bodies are
+ * surfaced: they describe the caller's own malformed request (e.g. an invalid
+ * OData filter) and carry no PII. 5xx and other statuses return null so their
+ * bodies stay server-side only (see the RockApiError contract in rock/client.ts).
+ */
+function safeReason(err: unknown): string | null {
+  if (!(err instanceof RockApiError)) return null;
+  if (err.status < 400 || err.status >= 500) return null;
+  const body = err.bodyText?.trim();
+  if (!body) return null;
+  let message = body;
+  try {
+    const parsed = JSON.parse(body);
+    if (parsed && typeof parsed.Message === 'string') message = parsed.Message;
+  } catch {
+    // Not JSON — fall back to the raw body text.
+  }
+  const MAX = 300;
+  return message.length > MAX ? `${message.slice(0, MAX)}…` : message;
+}
 
 /**
  * Entity search v2 endpoint for saved searches (no v1 equivalent).
@@ -145,18 +184,6 @@ function getRestV1Path(model: string): string {
   return model.charAt(0).toUpperCase() + model.slice(1);
 }
 
-function linqToOData(where?: string): string {
-  if (!where) return '';
-  let odata = where;
-  odata = odata.replace(/\s*==\s*/g, ' eq ');
-  odata = odata.replace(/\s*!=\s*/g, ' ne ');
-  // Convert double-quoted strings to OData single-quoted strings with escaped quotes
-  odata = odata.replace(/"([^"]*)"/g, (_match, content) => `'${escapeODataString(content)}'`);
-  odata = odata.replace(/\s*&&\s*/g, ' and ');
-  odata = odata.replace(/\s*\|\|\s*/g, ' or ');
-  return odata;
-}
-
 /**
  * Normalize model name to detect if it's a people model.
  * Returns true for 'people', 'person', or 'persons'.
@@ -254,7 +281,7 @@ export const rockEntityTool: GatewayTool = {
           result = projectPeopleSummary(result);
         }
         return formatResponse(parsed.action, ctx, result);
-      } catch (_err) {
+      } catch (v2Err) {
         // Fall back to REST v1
         try {
           const v1Path = getRestV1Path(model);
@@ -264,10 +291,10 @@ export const rockEntityTool: GatewayTool = {
             result = projectPeopleSummary(result);
           }
           return formatResponse(parsed.action, ctx, result, undefined, 'Fell back to REST v1');
-        } catch (v1Err: any) {
+        } catch (v1Err) {
           return formatResponse(parsed.action, ctx, null, {
             code: 'GET_ERROR',
-            message: `GET failed on v2 and v1: ${v1Err.message}`,
+            message: describeFallbackFailure('GET', v2Err, v1Err),
           });
         }
       }
@@ -294,7 +321,7 @@ export const rockEntityTool: GatewayTool = {
           Limit: limit,
         });
         return formatResponse(parsed.action, ctx, result);
-      } catch (_err) {
+      } catch (v2Err) {
         // Fall back to REST v1
         try {
           const v1Path = getRestV1Path(model);
@@ -314,10 +341,10 @@ export const rockEntityTool: GatewayTool = {
           }
           const result = await rockClient.get(ctx, url);
           return formatResponse(parsed.action, ctx, result, undefined, 'Fell back to REST v1');
-        } catch (v1Err: any) {
+        } catch (v1Err) {
           return formatResponse(parsed.action, ctx, null, {
             code: 'SEARCH_ERROR',
-            message: `Search failed on v2 and v1: ${v1Err.message}`,
+            message: describeFallbackFailure('Search', v2Err, v1Err),
           });
         }
       }
@@ -428,7 +455,7 @@ export const rockEntityTool: GatewayTool = {
           IsCountOnly: true,
         });
         return formatResponse(parsed.action, ctx, { count: result });
-      } catch (_err) {
+      } catch (v2Err) {
         // Fall back to REST v1
         try {
           const v1Path = getRestV1Path(model);
@@ -438,10 +465,10 @@ export const rockEntityTool: GatewayTool = {
           }
           const result = await rockClient.get<any[]>(ctx, url);
           return formatResponse(parsed.action, ctx, { count: result.length }, undefined, 'Fell back to REST v1 count');
-        } catch (v1Err: any) {
+        } catch (v1Err) {
           return formatResponse(parsed.action, ctx, null, {
             code: 'COUNT_ERROR',
-            message: `Count failed on v2 and v1: ${v1Err.message}`,
+            message: describeFallbackFailure('Count', v2Err, v1Err),
           });
         }
       }
@@ -452,17 +479,16 @@ export const rockEntityTool: GatewayTool = {
       try {
         const result = await rockClient.get(ctx, `/api/v2/models/${model}/${id}/attributevalues`);
         return formatResponse(parsed.action, ctx, result);
-      } catch {
+      } catch (v2Err) {
         // Fall back to REST v1 attribute values endpoint
         try {
           const v1Path = getRestV1Path(model);
           const result = await rockClient.get(ctx, `/api/${v1Path}/${id}/AttributeValues`);
           return formatResponse(parsed.action, ctx, result, undefined, 'Fell back to REST v1');
         } catch (v1Err) {
-          const errorMessage = v1Err instanceof Error ? v1Err.message : String(v1Err);
           return formatResponse(parsed.action, ctx, null, {
             code: 'ATTRIBUTE_VALUES_ERROR',
-            message: `Failed to fetch attribute values on v2 and v1: ${errorMessage}`,
+            message: describeFallbackFailure('Fetch attribute values', v2Err, v1Err),
           });
         }
       }
