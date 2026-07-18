@@ -61,22 +61,74 @@ function decodeHtmlEntities(input: string): string {
 }
 
 /**
+ * Zero-pad a number to a fixed width (e.g. `pad(7, 2)` -> `'07'`).
+ */
+function pad(value: number, width: number): string {
+  return String(value).padStart(width, '0');
+}
+
+/**
+ * Format a Date as an OData v3 datetime literal body `YYYY-MM-DDTHH:MM:SS`
+ * (no surrounding `datetime'...'`), using the local components of `d`.
+ */
+function toODataDateLiteralBody(d: Date): string {
+  return (
+    `${pad(d.getFullYear(), 4)}-${pad(d.getMonth() + 1, 2)}-${pad(d.getDate(), 2)}` +
+    `T${pad(d.getHours(), 2)}:${pad(d.getMinutes(), 2)}:${pad(d.getSeconds(), 2)}`
+  );
+}
+
+// GUID content (8-4-4-4-12 hex, hyphens optional). Kept in sync with assertValidGuid.
+const GUID_LITERAL_RE = /^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i;
+
+/**
  * Translate a Dynamic-LINQ-style `where` clause (as accepted by Rock's v2 search)
  * into an OData v3 `$filter` expression for the v1 REST fallback.
  *
  * Rock's v1 API speaks WCF Data Services OData v3, which differs from LINQ in
- * three ways this handles: relational operators are word tokens
+ * several ways this handles: relational operators are word tokens
  * (`gt`/`lt`/`ge`/`le`, not `>`/`<`/`>=`/`<=`); string matching uses the
  * `substringof`/`startswith`/`endswith` functions rather than `.Contains()` etc.;
- * and string literals are single-quoted, not double-quoted.
+ * string literals are single-quoted, not double-quoted; and date/GUID values are
+ * typed literals (`datetime'...'` / `guid'...'`) rather than LINQ constructors or
+ * plain strings.
  *
  * This is a best-effort, regex-based translation for the common filter shapes —
  * it does NOT parse the expression, so an operator or entity that appears inside
  * a quoted string literal may be rewritten too. Keep `where` clauses simple.
+ *
+ * @param where The LINQ-style filter clause.
+ * @param now   Clock used to resolve relative dates (`DateTime.Now`/`.Today`).
+ *              Injectable for deterministic tests; defaults to the current time.
  */
-export function linqToOData(where?: string): string {
+export function linqToOData(where?: string, now: Date = new Date()): string {
   if (!where) return '';
   let odata = decodeHtmlEntities(where);
+
+  // Relative-date constructors -> concrete OData datetime literals. Done before the
+  // `DateTime(...)` rule below (these have no parens) and before quote/operator steps
+  // (the emitted `datetime'...'` is single-quoted digits, untouched by later rules).
+  // `.Today` / `.Now.Date` -> midnight today; `.Now` / `.UtcNow` -> full timestamp.
+  // Date arithmetic (`.AddDays(...)`) is intentionally NOT handled.
+  const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  odata = odata
+    .replace(/DateTime\.Now\.Date/gi, `datetime'${toODataDateLiteralBody(midnight)}'`)
+    .replace(/DateTime\.Today/gi, `datetime'${toODataDateLiteralBody(midnight)}'`)
+    .replace(/DateTime\.(?:Now|UtcNow)/gi, `datetime'${toODataDateLiteralBody(now)}'`);
+
+  // `DateTime(y, m, d[, h, mi, s])` constructor -> `datetime'YYYY-MM-DDTHH:MM:SS'`.
+  // Only 3–6 integer args are accepted; anything else is left unchanged so a
+  // malformed clause fails visibly rather than producing a wrong date.
+  odata = odata.replace(/DateTime\(\s*([\d\s,]+?)\s*\)/gi, (match, argList: string) => {
+    const parts = argList.split(',').map((p) => p.trim());
+    if (parts.some((p) => !/^\d+$/.test(p))) return match;
+    const nums = parts.map((p) => parseInt(p, 10));
+    if (nums.length < 3 || nums.length > 6) return match;
+    const [y, mo, d, h = 0, mi = 0, s = 0] = nums;
+    const body =
+      `${pad(y, 4)}-${pad(mo, 2)}-${pad(d, 2)}T${pad(h, 2)}:${pad(mi, 2)}:${pad(s, 2)}`;
+    return `datetime'${body}'`;
+  });
 
   // Method calls -> OData functions. Done before quote conversion so the
   // argument's double quotes are normalized to single quotes by the step below.
@@ -107,6 +159,14 @@ export function linqToOData(where?: string): string {
 
   // Convert double-quoted LINQ strings to OData single-quoted strings.
   odata = odata.replace(/"([^"]*)"/g, (_m, content) => `'${escapeODataString(content)}'`);
+
+  // GUID-valued literals -> typed `guid'...'` literals. Runs after quote conversion so
+  // both `"..."` and `'...'` inputs are covered. Tightly scoped to the full GUID shape
+  // so ordinary string values (which are never 8-4-4-4-12 hex) are never mis-prefixed.
+  // The negative lookbehind avoids double-prefixing an already-typed `guid'...'` literal.
+  odata = odata.replace(/(?<!guid)'([^']*)'/gi, (match, content: string) =>
+    GUID_LITERAL_RE.test(content) ? `guid'${content}'` : match
+  );
 
   // Logical operators.
   odata = odata.replace(/\s*&&\s*/g, ' and ');
