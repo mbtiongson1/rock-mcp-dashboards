@@ -121,6 +121,68 @@ describe('query sanitization', () => {
     it('converts double-quoted string literals to single-quoted and escapes single quotes', () => {
       expect(linqToOData('LastName == "O\'Brien"')).toBe("LastName eq 'O''Brien'");
     });
+
+    // Regression: rock_entity search 400'd ("unknown function 'DateTime'") because the
+    // v1 OData fallback never translated the LINQ DateTime(...) constructor.
+    describe('date literals', () => {
+      it('translates the exact reported failing clause', () => {
+        expect(
+          linqToOData('GroupId == 19095 && OccurrenceDate >= DateTime(2026,7,26)')
+        ).toBe("GroupId eq 19095 and OccurrenceDate ge datetime'2026-07-26T00:00:00'");
+      });
+
+      it('zero-pads single-digit month/day components', () => {
+        expect(linqToOData('D == DateTime(2026, 1, 5)')).toBe(
+          "D eq datetime'2026-01-05T00:00:00'"
+        );
+      });
+
+      it('supports the six-arg form with a time component', () => {
+        expect(linqToOData('D == DateTime(2026, 7, 26, 14, 30, 5)')).toBe(
+          "D eq datetime'2026-07-26T14:30:05'"
+        );
+      });
+
+      it('leaves an unsupported arg count unchanged (fails visibly)', () => {
+        expect(linqToOData('D == DateTime(2026, 7)')).toBe(
+          "D eq DateTime(2026, 7)"
+        );
+      });
+
+      it('resolves DateTime.Today / .Now.Date to midnight of the injected clock', () => {
+        const now = new Date('2026-07-18T09:30:45');
+        expect(linqToOData('D >= DateTime.Today', now)).toBe(
+          "D ge datetime'2026-07-18T00:00:00'"
+        );
+        expect(linqToOData('D >= DateTime.Now.Date', now)).toBe(
+          "D ge datetime'2026-07-18T00:00:00'"
+        );
+      });
+
+      it('resolves DateTime.Now / .UtcNow to the full injected timestamp', () => {
+        const now = new Date('2026-07-18T09:30:45');
+        expect(linqToOData('D >= DateTime.Now', now)).toBe(
+          "D ge datetime'2026-07-18T09:30:45'"
+        );
+        expect(linqToOData('D >= DateTime.UtcNow', now)).toBe(
+          "D ge datetime'2026-07-18T09:30:45'"
+        );
+      });
+    });
+
+    // Regression: a Guid comparison 400'd because OData v3 needs a typed guid'...'
+    // literal, not a plain single-quoted string.
+    describe('GUID literals', () => {
+      it('emits a typed guid literal for a GUID-shaped value', () => {
+        expect(
+          linqToOData('Guid == "550e8400-e29b-41d4-a716-446655440000"')
+        ).toBe("Guid eq guid'550e8400-e29b-41d4-a716-446655440000'");
+      });
+
+      it('leaves an ordinary (non-GUID) string as a plain quoted literal', () => {
+        expect(linqToOData('LastName == "Smith"')).toBe("LastName eq 'Smith'");
+      });
+    });
   });
 
   describe('assertValidGuid', () => {
