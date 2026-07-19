@@ -96,13 +96,13 @@ export async function buildAppContext(options: CreateAppContextOptions = {}): Pr
   const transactionStore = options.transactionStore || new OAuthTransactionStore(redis);
 
   const discoveryService = new DiscoveryService(rockClient, redis);
-  const rockUserResolver = options.rockUserResolver ?? new RockUserResolver(rockClient);
+  const rockUserResolver = options.rockUserResolver ?? new RockUserResolver(rockClient, redis);
   const datasetStore: DatasetStore = redis
     ? new RedisDatasetStore(redis)
     : new InMemoryDatasetStore();
 
   if (redis) {
-    console.log('[Rock MCP] Using Redis cache for discovery and datasets');
+    console.log('[Rock MCP] Using Redis cache for discovery, datasets, and user resolution');
   } else {
     console.log('[Rock MCP] Using in-memory cache (Redis not configured)');
   }
@@ -128,7 +128,7 @@ export async function buildAppContext(options: CreateAppContextOptions = {}): Pr
     let resolver = scopedUserResolvers.get(baseUrl);
     if (!resolver) {
       const client = rockClientForBase(baseUrl);
-      resolver = new RockUserResolver(client);
+      resolver = new RockUserResolver(client, redis);
       scopedUserResolvers.set(baseUrl, resolver);
     }
     return resolver;

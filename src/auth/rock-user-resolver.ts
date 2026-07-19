@@ -1,6 +1,9 @@
+import * as crypto from 'crypto';
+import type { Redis } from '@upstash/redis';
 import { RockClient } from '../rock/client.js';
 import { OAuthRockContext } from '../http/oauth.js';
 import { quoteODataString, assertValidGuid } from '../rock/query.js';
+import { getRedisPrefix } from '../rock/redis.js';
 
 /**
  * True if a GroupMember's `GroupMemberStatus` represents "Active". Rock's enum
@@ -42,6 +45,62 @@ interface CacheEntry<T> {
   expiresAt: number;
 }
 
+interface UserResolutionCacheRecord {
+  version: 1;
+  subjectHash: string;
+  expiresAt: number;
+  user: ResolvedRockUser;
+}
+
+const USER_RESOLUTION_TTL_SECONDS = 900;
+
+function isOptionalInteger(value: unknown): boolean {
+  return value === undefined || (typeof value === 'number' && Number.isInteger(value) && value > 0);
+}
+
+function isOptionalString(value: unknown): boolean {
+  return value === undefined || (typeof value === 'string' && value.length > 0);
+}
+
+function isResolvedRockUser(value: unknown): value is ResolvedRockUser {
+  if (!value || typeof value !== 'object') return false;
+  const user = value as Record<string, unknown>;
+  if (!isOptionalInteger(user.personId)) return false;
+  if (!isOptionalString(user.personGuid)) return false;
+  if (!isOptionalInteger(user.personAliasId)) return false;
+  if (!isOptionalInteger(user.userLoginId)) return false;
+  if (!isOptionalString(user.userName)) return false;
+  if (typeof user.isRsrAdmin !== 'boolean' || typeof user.isStaff !== 'boolean') return false;
+  if (!Array.isArray(user.ledGroupIds) || !user.ledGroupIds.every((id) => isOptionalInteger(id) && id !== undefined)) {
+    return false;
+  }
+
+  // Reject privilege-bearing records that cannot have come from live resolution.
+  if (user.isRsrAdmin && !user.isStaff) return false;
+  if (user.personId === undefined && (user.isRsrAdmin || user.isStaff || user.ledGroupIds.length > 0)) return false;
+  return true;
+}
+
+function parseUserResolutionCacheRecord(
+  cached: unknown,
+  subjectHash: string,
+  now: number
+): UserResolutionCacheRecord | null {
+  try {
+    const parsed = typeof cached === 'string' ? JSON.parse(cached) as unknown : cached;
+    if (!parsed || typeof parsed !== 'object') return null;
+    const record = parsed as Record<string, unknown>;
+    if (record.version !== 1 || record.subjectHash !== subjectHash) return null;
+    if (typeof record.expiresAt !== 'number' || !Number.isFinite(record.expiresAt) || record.expiresAt <= now) {
+      return null;
+    }
+    if (!isResolvedRockUser(record.user)) return null;
+    return record as unknown as UserResolutionCacheRecord;
+  } catch {
+    return null;
+  }
+}
+
 export class RockUserResolver {
   private static RSR_ROLE_NAME = 'RSR - Rock Administration';
   /**
@@ -50,7 +109,7 @@ export class RockUserResolver {
    * comma-separated `ROCK_STAFF_ROLE_NAMES` env var.
    */
   private static DEFAULT_STAFF_ROLE_NAMES = ['RSR - Staff Workers', 'RSR - Staff Like Workers'];
-  private cache = new Map<string, CacheEntry<any>>();
+  private cache = new Map<string, CacheEntry<unknown>>();
 
   /** Resolve the configured staff role names (env override or defaults). */
   private staffRoleNames(): string[] {
@@ -65,7 +124,11 @@ export class RockUserResolver {
     return names.length > 0 ? names : RockUserResolver.DEFAULT_STAFF_ROLE_NAMES;
   }
 
-  constructor(private rockClient: RockClient) {}
+  constructor(
+    private rockClient: RockClient,
+    private redis: Redis | null = null,
+    private redisPrefix: string = getRedisPrefix()
+  ) {}
 
   private getCached<T>(key: string): T | null {
     const entry = this.cache.get(key);
@@ -74,7 +137,7 @@ export class RockUserResolver {
       this.cache.delete(key);
       return null;
     }
-    return entry.value;
+    return entry.value as T;
   }
 
   private setCached<T>(key: string, value: T, ttlMs: number): void {
@@ -84,13 +147,42 @@ export class RockUserResolver {
     });
   }
 
+  private getUserResolutionCacheIdentity(subject: string): { cacheKey: string; subjectHash: string } {
+    const subjectHash = crypto.createHash('sha256').update(subject).digest('hex').slice(0, 24);
+    const rockBaseUrlHash = crypto
+      .createHash('sha256')
+      .update(this.rockClient.baseUrl || 'default-rock-server')
+      .digest('hex')
+      .slice(0, 16);
+    return {
+      cacheKey: `${this.redisPrefix}user-resolution:v1:${rockBaseUrlHash}:${subjectHash}`,
+      subjectHash,
+    };
+  }
+
   public async resolve(
     ctx: OAuthRockContext,
     oauth: { subject: string; email?: string; rockPersonGuid?: string }
   ): Promise<ResolvedRockUser> {
-    const cacheKey = `user-resolution:${oauth.subject}`;
+    const { cacheKey, subjectHash } = this.getUserResolutionCacheIdentity(oauth.subject);
     const cached = this.getCached<ResolvedRockUser>(cacheKey);
-    if (cached) return cached;
+    if (cached && isResolvedRockUser(cached)) return cached;
+
+    if (this.redis) {
+      try {
+        const redisValue = await this.redis.get<unknown>(cacheKey);
+        const record = parseUserResolutionCacheRecord(redisValue, subjectHash, Date.now());
+        if (record) {
+          const remainingTtlMs = record.expiresAt - Date.now();
+          if (remainingTtlMs > 0) {
+            this.setCached(cacheKey, record.user, remainingTtlMs);
+            return record.user;
+          }
+        }
+      } catch {
+        // Redis is only an optimization. Resolve live on any read failure.
+      }
+    }
 
     let person: any = null;
 
@@ -146,17 +238,32 @@ export class RockUserResolver {
       resolved.personGuid = person.Guid;
       resolved.personAliasId = person.PrimaryAliasId || person.Id;
 
-      resolved.isRsrAdmin = await this.checkRsrAdmin(ctx, person.Id);
-      // Admins are a privilege superset of staff, so skip the extra staff
-      // lookups for them and treat them as staff.
-      resolved.isStaff = resolved.isRsrAdmin ? true : await this.checkStaff(ctx, person.Id);
-      // Admins override every write via isRsrAdmin, so they don't need their
-      // led-group set — skip the extra lookup for them.
-      resolved.ledGroupIds = resolved.isRsrAdmin ? [] : await this.getLedGroupIds(ctx, person.Id);
+      // These checks depend only on the resolved person id, not on each other.
+      const [isRsrAdmin, isStaff, ledGroupIds] = await Promise.all([
+        this.checkRsrAdmin(ctx, person.Id),
+        this.checkStaff(ctx, person.Id),
+        this.getLedGroupIds(ctx, person.Id),
+      ]);
+      resolved.isRsrAdmin = isRsrAdmin;
+      resolved.isStaff = isRsrAdmin || isStaff;
+      resolved.ledGroupIds = isRsrAdmin ? [] : ledGroupIds;
     }
 
-    // Cache user resolution for 15 minutes
-    this.setCached(cacheKey, resolved, 900000);
+    const expiresAt = Date.now() + USER_RESOLUTION_TTL_SECONDS * 1000;
+    this.setCached(cacheKey, resolved, USER_RESOLUTION_TTL_SECONDS * 1000);
+    if (this.redis) {
+      const record: UserResolutionCacheRecord = {
+        version: 1,
+        subjectHash,
+        expiresAt,
+        user: resolved,
+      };
+      try {
+        await this.redis.set(cacheKey, JSON.stringify(record), { ex: USER_RESOLUTION_TTL_SECONDS });
+      } catch {
+        // The live result remains authoritative when Redis cannot be populated.
+      }
+    }
 
     return resolved;
   }
@@ -176,12 +283,10 @@ export class RockUserResolver {
    * (false) on any denied/failed lookup, exactly like the admin check.
    */
   private async checkStaff(ctx: OAuthRockContext, personId: number): Promise<boolean> {
-    for (const roleName of this.staffRoleNames()) {
-      if (await this.isActiveRoleMember(ctx, personId, roleName)) {
-        return true;
-      }
-    }
-    return false;
+    const memberships = await Promise.all(
+      this.staffRoleNames().map((roleName) => this.isActiveRoleMember(ctx, personId, roleName))
+    );
+    return memberships.some(Boolean);
   }
 
   /**

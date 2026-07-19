@@ -1,3 +1,4 @@
+import * as crypto from 'crypto';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { RockUserResolver, isActiveGroupMemberStatus } from '../../src/auth/rock-user-resolver.js';
 import { RockClient } from '../../src/rock/client.js';
@@ -15,6 +16,29 @@ describe('RockUserResolver', () => {
       put: vi.fn(),
       patch: vi.fn(),
       delete: vi.fn(),
+    };
+  }
+
+  function resolvedPersonClient(personId: number): RockClient {
+    const client = createMockClient();
+    client.get = vi.fn().mockImplementation(async (_ctx, path: string) => {
+      if (path === '/api/People/GetCurrentPerson') {
+        return { Id: personId, PrimaryAliasId: personId * 10, Guid: `guid-${personId}` };
+      }
+      return [];
+    });
+    return client;
+  }
+
+  function createMockRedis() {
+    const data = new Map<string, string>();
+    return {
+      data,
+      get: vi.fn(async (key: string) => data.get(key) ?? null),
+      set: vi.fn(async (key: string, value: string) => {
+        data.set(key, value);
+        return 'OK';
+      }),
     };
   }
 
@@ -96,6 +120,129 @@ describe('RockUserResolver', () => {
     await resolver.resolve(mockCtx, oauth);
 
     expect(mockClient.post).not.toHaveBeenCalled();
+  });
+
+  describe('Redis-backed user-resolution cache', () => {
+    it('resolves live on a cache miss and populates Redis for 15 minutes', async () => {
+      const redis = createMockRedis();
+      const client = resolvedPersonClient(21);
+      const redisResolver = new RockUserResolver(client, redis as any);
+
+      const result = await redisResolver.resolve(mockCtx, { subject: 'cache-miss-user' });
+
+      expect(result.personId).toBe(21);
+      expect(redis.get).toHaveBeenCalledTimes(1);
+      expect(redis.set).toHaveBeenCalledWith(
+        expect.stringMatching(/user-resolution:v1:/),
+        expect.any(String),
+        { ex: 900 }
+      );
+    });
+
+    it('uses a Redis hit across resolver instances without calling Rock', async () => {
+      const redis = createMockRedis();
+      const firstClient = resolvedPersonClient(22);
+      await new RockUserResolver(firstClient, redis as any).resolve(mockCtx, { subject: 'cache-hit-user' });
+
+      const secondClient = createMockClient();
+      secondClient.get = vi.fn().mockRejectedValue(new Error('Rock must not be called on a cache hit'));
+      const result = await new RockUserResolver(secondClient, redis as any).resolve(mockCtx, {
+        subject: 'cache-hit-user',
+      });
+
+      expect(result.personId).toBe(22);
+      expect(secondClient.get).not.toHaveBeenCalled();
+      expect(redis.get).toHaveBeenCalledTimes(2);
+    });
+
+    it('falls back to a live resolve when Redis is down', async () => {
+      const redis = {
+        get: vi.fn().mockRejectedValue(new Error('Redis unavailable')),
+        set: vi.fn().mockRejectedValue(new Error('Redis unavailable')),
+      };
+      const client = resolvedPersonClient(23);
+
+      const result = await new RockUserResolver(client, redis as any).resolve(mockCtx, {
+        subject: 'redis-down-user',
+      });
+
+      expect(result.personId).toBe(23);
+      expect(redis.get).toHaveBeenCalledTimes(1);
+      expect(client.get).toHaveBeenCalledWith(mockCtx, '/api/People/GetCurrentPerson');
+      expect(redis.set).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      {
+        label: 'privilege-incoherent',
+        expiresAt: Date.now() + 60_000,
+        user: { personId: 999, isRsrAdmin: true, isStaff: false, ledGroupIds: [] },
+      },
+      {
+        label: 'expired',
+        expiresAt: Date.now() - 1,
+        user: { personId: 999, isRsrAdmin: true, isStaff: true, ledGroupIds: [] },
+      },
+    ])('ignores a $label Redis entry and resolves live', async ({ expiresAt, user }) => {
+      const subject = 'invalid-cache-user';
+      const subjectHash = crypto.createHash('sha256').update(subject).digest('hex').slice(0, 24);
+      const redis = {
+        get: vi.fn().mockResolvedValue(JSON.stringify({ version: 1, subjectHash, expiresAt, user })),
+        set: vi.fn().mockResolvedValue('OK'),
+      };
+      const client = resolvedPersonClient(24);
+
+      const result = await new RockUserResolver(client, redis as any).resolve(mockCtx, { subject });
+
+      expect(result.personId).toBe(24);
+      expect(result.isRsrAdmin).toBe(false);
+      expect(redis.get).toHaveBeenCalledTimes(1);
+      expect(client.get).toHaveBeenCalledWith(mockCtx, '/api/People/GetCurrentPerson');
+    });
+  });
+
+  it('starts independent admin, staff, and led-group checks concurrently', async () => {
+    const started: string[] = [];
+    let releaseChecks: (() => void) | undefined;
+    const checksMayFinish = new Promise<void>((resolve) => {
+      releaseChecks = resolve;
+    });
+    mockClient.get = vi.fn().mockImplementation(async (_ctx, path: string) => {
+      if (path === '/api/People/GetCurrentPerson') {
+        return { Id: 25, PrimaryAliasId: 250, Guid: 'guid-25' };
+      }
+      if (path.includes('/api/Groups')) {
+        if (path.includes('Rock Administration')) return [{ Id: 90 }];
+        if (path.includes('Staff Workers')) return [{ Id: 91 }];
+        return [];
+      }
+      if (path.includes('GroupId eq 90')) {
+        started.push('admin');
+        await checksMayFinish;
+        return [];
+      }
+      if (path.includes('GroupId eq 91')) {
+        started.push('staff');
+        await checksMayFinish;
+        return [];
+      }
+      if (path.includes('$expand=GroupRole')) {
+        started.push('led-groups');
+        await checksMayFinish;
+        return [];
+      }
+      return [];
+    });
+
+    const pending = resolver.resolve(mockCtx, { subject: 'parallel-user' });
+    try {
+      await vi.waitFor(() => {
+        expect(started).toEqual(expect.arrayContaining(['admin', 'staff', 'led-groups']));
+      });
+    } finally {
+      releaseChecks?.();
+    }
+    await pending;
   });
 
   it('should return isRsrAdmin true if user is member of RSR role', async () => {
@@ -405,7 +552,7 @@ describe('ledGroupIds / getLedGroupIds', () => {
     expect(result.ledGroupIds).toEqual([]);
   });
 
-  it('skips the leadership query entirely for admins and sets ledGroupIds to []', async () => {
+  it('discards led-group results for admins after concurrent authorization lookups', async () => {
     const leadershipQuery = vi.fn();
     mockClient.get = vi.fn().mockImplementation(async (_ctx, path: string) => {
       if (path.includes('/api/People')) {
@@ -433,7 +580,7 @@ describe('ledGroupIds / getLedGroupIds', () => {
 
     expect(result.isRsrAdmin).toBe(true);
     expect(result.ledGroupIds).toEqual([]);
-    expect(leadershipQuery).not.toHaveBeenCalled();
+    expect(leadershipQuery).toHaveBeenCalledTimes(1);
   });
 
   it('is always present ([]) on a resolved non-admin, non-leader user', async () => {
