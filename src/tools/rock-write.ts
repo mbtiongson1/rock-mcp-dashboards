@@ -206,8 +206,15 @@ export const rockWriteTool: GatewayTool = {
         });
 
         return formatResponse(action, ctx, { committed: true, result });
-      } catch (_err) {
-        // Fall back to REST v1 POST
+      } catch (v2Err: any) {
+        // Fall back to REST v1 POST.
+        // NOTE: Rock's v2 models API is unavailable on this instance and 401s
+        // for EVERY write model (see rock-user-resolver.ts:97 and CLAUDE.md
+        // "Known Rock API quirks"), so this fallback fires on every create.
+        // Surface the underlying v2 error (RockApiError.message is already
+        // generic — status + statusText only, safe to echo) so the degradation
+        // is visible instead of silent.
+        const v2Detail = v2Err?.message ? ` (v2: ${v2Err.message})` : '';
         try {
           const v1Path = getRestV1Path(model);
           const result = await rockClient.post(ctx, `/api/${v1Path}`, data);
@@ -222,7 +229,7 @@ export const rockWriteTool: GatewayTool = {
             outcome: 'success',
           });
 
-          return formatResponse(action, ctx, { committed: true, result }, undefined, 'Fell back to REST v1');
+          return formatResponse(action, ctx, { committed: true, result }, undefined, `Fell back to REST v1${v2Detail}`);
         } catch (v1Err: any) {
           auditLogger.log(ctx, {
             tool: 'rock_write',
@@ -259,8 +266,10 @@ export const rockWriteTool: GatewayTool = {
         });
 
         return formatResponse(action, ctx, { committed: true, result });
-      } catch (_err) {
-        // Fall back to REST v1 PATCH
+      } catch (v2Err: any) {
+        // Fall back to REST v1 PATCH. v2 models API is unavailable on this
+        // instance (see create branch above); surface the v2 error.
+        const v2Detail = v2Err?.message ? ` (v2: ${v2Err.message})` : '';
         try {
           const v1Path = getRestV1Path(model);
           const result = await rockClient.patch(ctx, `/api/${v1Path}/${id}`, data);
@@ -275,7 +284,7 @@ export const rockWriteTool: GatewayTool = {
             outcome: 'success',
           });
 
-          return formatResponse(action, ctx, { committed: true, result }, undefined, 'Fell back to REST v1');
+          return formatResponse(action, ctx, { committed: true, result }, undefined, `Fell back to REST v1${v2Detail}`);
         } catch (v1Err: any) {
           auditLogger.log(ctx, {
             tool: 'rock_write',
@@ -347,8 +356,10 @@ export const rockWriteTool: GatewayTool = {
         });
 
         return formatResponse(action, ctx, { committed: true, result });
-      } catch (_err) {
-        // Fall back to REST v1 DELETE
+      } catch (v2Err: any) {
+        // Fall back to REST v1 DELETE. v2 models API is unavailable on this
+        // instance (see create branch above); surface the v2 error.
+        const v2Detail = v2Err?.message ? ` (v2: ${v2Err.message})` : '';
         try {
           const v1Path = getRestV1Path(model);
           const result = await rockClient.delete(ctx, `/api/${v1Path}/${id}`);
@@ -363,7 +374,7 @@ export const rockWriteTool: GatewayTool = {
             outcome: 'success',
           });
 
-          return formatResponse(action, ctx, { committed: true, result }, undefined, 'Fell back to REST v1');
+          return formatResponse(action, ctx, { committed: true, result }, undefined, `Fell back to REST v1${v2Detail}`);
         } catch (v1Err: any) {
           auditLogger.log(ctx, {
             tool: 'rock_write',

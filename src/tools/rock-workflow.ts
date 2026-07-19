@@ -165,18 +165,34 @@ export const rockWorkflowTool: GatewayTool = {
     if (parsed.action === 'workflowStatus') {
       const { workflowId } = parsed;
       try {
-        let wf: any = null;
-        try {
-          wf = await rockClient.get(ctx, `/api/v2/models/workflows/${workflowId}`);
-        } catch (_err) {
-          wf = await rockClient.get(ctx, `/api/Workflows/${workflowId}`);
+        // Resolve via the v1 controller ONLY. The v2 models API is unavailable
+        // on this Rock instance (401s even with valid credentials — see
+        // rock-user-resolver.ts and CLAUDE.md "Known Rock API quirks"), and its
+        // GET-by-id route keys on the entity's IdKey (a Hashid string), not the
+        // integer Id. Passing an integer Id to `/api/v2/models/workflows/{id}`
+        // can silently resolve a DIFFERENT workflow (whose IdKey happens to
+        // match), returning a wrong-but-200 record. Because a 200 never triggers
+        // the old v1 fallback, `isCompleted` was being derived from the wrong
+        // workflow (returned `true` for a genuinely-incomplete workflow). The v1
+        // controller keys on the integer Id and is the authoritative source.
+        const wf: any = await rockClient.get(ctx, `/api/Workflows/${workflowId}`);
+
+        // Guard: never derive status from a record that isn't the one requested.
+        if (wf && wf.Id !== undefined && wf.Id !== workflowId) {
+          return formatResponse(parsed.action, ctx, null, {
+            code: 'WORKFLOW_ID_MISMATCH',
+            message: `Requested workflow ${workflowId} but Rock returned ${wf.Id}.`,
+          });
         }
 
         return formatResponse(parsed.action, ctx, {
           id: wf.Id,
           name: wf.Name,
           status: wf.Status,
-          isCompleted: wf.CompletedDateTime !== null,
+          // Completion is authoritative only via CompletedDateTime. Use a
+          // truthiness check (not `!== null`) so an omitted/undefined field is
+          // treated as incomplete rather than complete.
+          isCompleted: Boolean(wf.CompletedDateTime),
         });
       } catch (err: any) {
         return formatResponse(parsed.action, ctx, null, {
