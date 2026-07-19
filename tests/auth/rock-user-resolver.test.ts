@@ -18,6 +18,65 @@ describe('RockUserResolver', () => {
     };
   }
 
+  interface AuthorizationState {
+    personId: number;
+    isRsrAdmin: boolean;
+    isStaff: boolean;
+    ledGroupIds: number[];
+    omitProfileMetadata?: boolean;
+  }
+
+  function authorizationClient(state: AuthorizationState): RockClient {
+    const client = createMockClient();
+    Object.defineProperty(client, 'baseUrl', { value: 'https://rock.example' });
+    client.get = vi.fn().mockImplementation(async (_ctx, path: string) => {
+      if (path === '/api/People/GetCurrentPerson') {
+        return {
+          Id: state.personId,
+          ...(state.omitProfileMetadata
+            ? {}
+            : { PrimaryAliasId: state.personId * 10, Guid: `guid-${state.personId}` }),
+        };
+      }
+      if (path.includes('/api/Groups')) {
+        if (path.includes('Rock Administration')) return [{ Id: 90 }];
+        if (path.includes('Staff Like Workers')) return [{ Id: 92 }];
+        if (path.includes('Staff Workers')) return [{ Id: 91 }];
+        return [];
+      }
+      if (path.includes('$expand=GroupRole')) {
+        return state.ledGroupIds.map((groupId) => ({
+          GroupId: groupId,
+          GroupMemberStatus: 'Active',
+          GroupRole: { IsLeader: true },
+        }));
+      }
+      if (path.includes('/api/GroupMembers')) {
+        if (path.includes('GroupId eq 90') && state.isRsrAdmin) {
+          return [{ GroupId: 90, PersonId: state.personId, GroupMemberStatus: 'Active' }];
+        }
+        if (path.includes('GroupId eq 91') && state.isStaff) {
+          return [{ GroupId: 91, PersonId: state.personId, GroupMemberStatus: 'Active' }];
+        }
+        return [];
+      }
+      return [];
+    });
+    return client;
+  }
+
+  function createMockRedis() {
+    const data = new Map<string, string>();
+    return {
+      data,
+      get: vi.fn(async (key: string) => data.get(key) ?? null),
+      set: vi.fn(async (key: string, value: string, _options?: { ex: number }) => {
+        data.set(key, value);
+        return 'OK';
+      }),
+    };
+  }
+
   beforeEach(() => {
     mockClient = createMockClient();
     resolver = new RockUserResolver(mockClient);
@@ -42,7 +101,7 @@ describe('RockUserResolver', () => {
     expect(result.personAliasId).toBe(14);
   });
 
-  it('should resolve user by explicit GUID claim via Rock v1', async () => {
+  it('fails closed instead of using a GUID claim when GetCurrentPerson cannot validate the live binding', async () => {
     const oauth = {
       subject: 'user-123',
       email: 'alex@example.com',
@@ -50,7 +109,10 @@ describe('RockUserResolver', () => {
       rockPersonGuid: '550e8400-e29b-41d4-a716-446655440000', // claim containing person guid
     };
 
-    mockClient.get = vi.fn().mockImplementation(async (_ctx, path) => {
+    mockClient.get = vi.fn().mockImplementation(async (_ctx, path: string) => {
+      if (path === '/api/People/GetCurrentPerson') {
+        throw new Error('Rock identity lookup unavailable');
+      }
       if (path.includes('/api/People') && path.includes('Guid eq')) {
         return [{ Id: 12, PrimaryAliasId: 24, Guid: '550e8400-e29b-41d4-a716-446655440000', NickName: 'Alex' }];
       }
@@ -59,12 +121,11 @@ describe('RockUserResolver', () => {
 
     const result = await resolver.resolve(mockCtx, oauth);
 
-    expect(result.personId).toBe(12);
-    expect(result.personGuid).toBe('550e8400-e29b-41d4-a716-446655440000');
-    expect(result.personAliasId).toBe(24);
+    expect(result.personId).toBeUndefined();
+    expect(mockClient.get).toHaveBeenCalledTimes(1);
   });
 
-  it('should resolve user by email if GUID claim is not present', async () => {
+  it('fails closed instead of using an email claim when GetCurrentPerson returns no person', async () => {
     const oauth = {
       subject: 'user-123',
       email: 'alex@example.com',
@@ -80,8 +141,8 @@ describe('RockUserResolver', () => {
 
     const result = await resolver.resolve(mockCtx, oauth);
 
-    expect(result.personId).toBe(12);
-    expect(result.personGuid).toBe('guid-abc-123');
+    expect(result.personId).toBeUndefined();
+    expect(mockClient.get).toHaveBeenCalledTimes(1);
   });
 
   it('never calls the unavailable v2 API', async () => {
@@ -98,6 +159,216 @@ describe('RockUserResolver', () => {
     expect(mockClient.post).not.toHaveBeenCalled();
   });
 
+  describe('Redis-backed inert profile-metadata cache', () => {
+    it('resolves live on a cache miss and caches only non-authorization profile metadata for 15 minutes', async () => {
+      const redis = createMockRedis();
+      const state = { personId: 21, isRsrAdmin: false, isStaff: false, ledGroupIds: [] };
+      const client = authorizationClient(state);
+      const redisResolver = new RockUserResolver(client, redis as any);
+
+      const result = await redisResolver.resolve(mockCtx, { subject: 'cache-miss-user' });
+
+      expect(result.personId).toBe(21);
+      expect(redis.get).toHaveBeenCalledTimes(1);
+      expect(redis.set).toHaveBeenCalledTimes(1);
+      for (const [key, value, options] of redis.set.mock.calls) {
+        expect(key).toMatch(/person-metadata:v1:/);
+        expect(options).toEqual({ ex: 900 });
+        expect(value).not.toMatch(/personId|isRsrAdmin|isStaff|ledGroupIds|subject/i);
+      }
+    });
+
+    it('uses a profile-metadata Redis hit across resolver instances while all identity and privilege checks stay live', async () => {
+      const redis = createMockRedis();
+      const firstState = { personId: 22, isRsrAdmin: false, isStaff: false, ledGroupIds: [] };
+      const firstClient = authorizationClient(firstState);
+      await new RockUserResolver(firstClient, redis as any).resolve(mockCtx, { subject: 'cache-hit-user' });
+
+      const secondState = {
+        personId: 22,
+        isRsrAdmin: false,
+        isStaff: false,
+        ledGroupIds: [],
+        omitProfileMetadata: true,
+      };
+      const secondClient = authorizationClient(secondState);
+      const result = await new RockUserResolver(secondClient, redis as any).resolve(mockCtx, {
+        subject: 'cache-hit-user',
+      });
+
+      expect(result.personId).toBe(22);
+      expect(result.personGuid).toBe('guid-22');
+      expect(result.personAliasId).toBe(220);
+      const secondPaths = vi.mocked(secondClient.get).mock.calls.map(([, path]) => path);
+      expect(secondPaths).toContain('/api/People/GetCurrentPerson');
+      expect(secondPaths.some((path) => path.includes('/api/GroupMembers'))).toBe(true);
+      expect(secondPaths.some((path) => path.includes('/api/Groups'))).toBe(true);
+      expect(redis.get).toHaveBeenCalledTimes(2);
+      expect(redis.set).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps live identity and privilege resolution when Redis is down', async () => {
+      const redis = {
+        get: vi.fn().mockRejectedValue(new Error('Redis unavailable')),
+        set: vi.fn().mockRejectedValue(new Error('Redis unavailable')),
+      };
+      const state = { personId: 24, isRsrAdmin: false, isStaff: false, ledGroupIds: [] };
+      const client = authorizationClient(state);
+
+      const result = await new RockUserResolver(client, redis as any).resolve(mockCtx, {
+        subject: 'redis-down-user',
+      });
+
+      expect(result.personId).toBe(24);
+      expect(redis.get).toHaveBeenCalledTimes(1);
+      expect(client.get).toHaveBeenCalledWith(mockCtx, '/api/People/GetCurrentPerson');
+      expect(vi.mocked(client.get).mock.calls.some(([, path]) => path.includes('/api/Groups'))).toBe(true);
+      expect(redis.set).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      {
+        label: 'malformed',
+        expiresAt: Date.now() + 60_000,
+        personAliasId: 'not-an-id',
+      },
+      {
+        label: 'expired',
+        expiresAt: Date.now() - 1,
+        personAliasId: 999,
+      },
+    ])('ignores a $label profile-metadata Redis entry and uses live metadata', async ({ expiresAt, personAliasId }) => {
+      const redis = {
+        get: vi.fn().mockResolvedValue(
+          JSON.stringify({ version: 1, expiresAt, metadata: { personAliasId } })
+        ),
+        set: vi.fn().mockResolvedValue('OK'),
+      };
+      const state = { personId: 25, isRsrAdmin: false, isStaff: false, ledGroupIds: [] };
+      const client = authorizationClient(state);
+
+      const result = await new RockUserResolver(client, redis as any).resolve(mockCtx, {
+        subject: 'invalid-cache-user',
+      });
+
+      expect(result.personId).toBe(25);
+      expect(result.personAliasId).toBe(250);
+      expect(result.isRsrAdmin).toBe(false);
+      expect(redis.get).toHaveBeenCalledTimes(1);
+      expect(client.get).toHaveBeenCalledWith(mockCtx, '/api/People/GetCurrentPerson');
+      expect(vi.mocked(client.get).mock.calls.some(([, path]) => path.includes('/api/Groups'))).toBe(true);
+    });
+
+    it.each([
+      {
+        label: 'admin',
+        initial: { isRsrAdmin: true, isStaff: false, ledGroupIds: [] },
+        expectedInitial: { isRsrAdmin: true, isStaff: true, ledGroupIds: [] },
+      },
+      {
+        label: 'staff',
+        initial: { isRsrAdmin: false, isStaff: true, ledGroupIds: [] },
+        expectedInitial: { isRsrAdmin: false, isStaff: true, ledGroupIds: [] },
+      },
+      {
+        label: 'leader',
+        initial: { isRsrAdmin: false, isStaff: false, ledGroupIds: [77] },
+        expectedInitial: { isRsrAdmin: false, isStaff: false, ledGroupIds: [77] },
+      },
+    ])('denies a revoked $label immediately with a warm cache in the same and a fresh resolver', async ({ initial, expectedInitial }) => {
+      const redis = createMockRedis();
+      const state: AuthorizationState = { personId: 30, ...initial };
+      const firstClient = authorizationClient(state);
+      const firstResolver = new RockUserResolver(firstClient, redis as any);
+
+      const granted = await firstResolver.resolve(mockCtx, { subject: 'revoked-user' });
+      expect(granted).toMatchObject(expectedInitial);
+
+      state.isRsrAdmin = false;
+      state.isStaff = false;
+      state.ledGroupIds = [];
+
+      const deniedInSameResolver = await firstResolver.resolve(mockCtx, { subject: 'revoked-user' });
+      expect(deniedInSameResolver).toMatchObject({ isRsrAdmin: false, isStaff: false, ledGroupIds: [] });
+
+      const secondClient = authorizationClient(state);
+      const deniedInFreshResolver = await new RockUserResolver(secondClient, redis as any).resolve(mockCtx, {
+        subject: 'revoked-user',
+      });
+      expect(deniedInFreshResolver).toMatchObject({ isRsrAdmin: false, isStaff: false, ledGroupIds: [] });
+      expect(secondClient.get).toHaveBeenCalledWith(mockCtx, '/api/People/GetCurrentPerson');
+    });
+
+    it('resolves a changed subject-to-person mapping immediately across resolver instances with a warm cache', async () => {
+      const redis = createMockRedis();
+      const state: AuthorizationState = {
+        personId: 31,
+        isRsrAdmin: false,
+        isStaff: false,
+        ledGroupIds: [],
+      };
+
+      const first = await new RockUserResolver(authorizationClient(state), redis as any).resolve(mockCtx, {
+        subject: 'remapped-subject',
+      });
+      expect(first.personId).toBe(31);
+
+      state.personId = 32;
+      const secondClient = authorizationClient(state);
+      const second = await new RockUserResolver(secondClient, redis as any).resolve(mockCtx, {
+        subject: 'remapped-subject',
+      });
+
+      expect(second.personId).toBe(32);
+      expect(second.personGuid).toBe('guid-32');
+      expect(secondClient.get).toHaveBeenCalledWith(mockCtx, '/api/People/GetCurrentPerson');
+    });
+  });
+
+  it('starts independent admin, staff, and led-group checks concurrently', async () => {
+    const started: string[] = [];
+    let releaseChecks: (() => void) | undefined;
+    const checksMayFinish = new Promise<void>((resolve) => {
+      releaseChecks = resolve;
+    });
+    mockClient.get = vi.fn().mockImplementation(async (_ctx, path: string) => {
+      if (path === '/api/People/GetCurrentPerson') {
+        return { Id: 25, PrimaryAliasId: 250, Guid: 'guid-25' };
+      }
+      if (path.includes('/api/Groups')) {
+        if (path.includes('Rock Administration')) return [{ Id: 90 }];
+        if (path.includes('Staff Workers')) return [{ Id: 91 }];
+        return [];
+      }
+      if (path.includes('GroupId eq 90')) {
+        started.push('admin');
+        await checksMayFinish;
+        return [];
+      }
+      if (path.includes('GroupId eq 91')) {
+        started.push('staff');
+        await checksMayFinish;
+        return [];
+      }
+      if (path.includes('$expand=GroupRole')) {
+        started.push('led-groups');
+        await checksMayFinish;
+        return [];
+      }
+      return [];
+    });
+
+    const pending = resolver.resolve(mockCtx, { subject: 'parallel-user' });
+    try {
+      await vi.waitFor(() => {
+        expect(started).toEqual(expect.arrayContaining(['admin', 'staff', 'led-groups']));
+      });
+    } finally {
+      releaseChecks?.();
+    }
+    await pending;
+  });
+
   it('should return isRsrAdmin true if user is member of RSR role', async () => {
     const oauth = {
       subject: 'user-123',
@@ -106,8 +377,8 @@ describe('RockUserResolver', () => {
     };
 
     mockClient.get = vi.fn().mockImplementation(async (_ctx, path) => {
-      if (path.includes('/api/People')) {
-        return [{ Id: 1, PrimaryAliasId: 10, Guid: '550e8400-e29b-41d4-a716-446655440001' }];
+      if (path === '/api/People/GetCurrentPerson') {
+        return { Id: 1, PrimaryAliasId: 10, Guid: '550e8400-e29b-41d4-a716-446655440001' };
       }
       if (path.includes('/api/Groups')) {
         return [{ Id: 99, Name: 'RSR - Rock Administration' }];
@@ -133,8 +404,8 @@ describe('RockUserResolver', () => {
     for (const status of [1, 'Active']) {
       const client = createMockClient();
       client.get = vi.fn().mockImplementation(async (_ctx, path) => {
-        if (path.includes('/api/People')) {
-          return [{ Id: 1, PrimaryAliasId: 10, Guid: '550e8400-e29b-41d4-a716-446655440001' }];
+        if (path === '/api/People/GetCurrentPerson') {
+          return { Id: 1, PrimaryAliasId: 10, Guid: '550e8400-e29b-41d4-a716-446655440001' };
         }
         if (path.includes('/api/Groups')) {
           return [{ Id: 99, Name: 'RSR - Rock Administration' }];
@@ -156,8 +427,8 @@ describe('RockUserResolver', () => {
     for (const status of [0, 'Inactive']) {
       const client = createMockClient();
       client.get = vi.fn().mockImplementation(async (_ctx, path) => {
-        if (path.includes('/api/People')) {
-          return [{ Id: 1, PrimaryAliasId: 10, Guid: '550e8400-e29b-41d4-a716-446655440001' }];
+        if (path === '/api/People/GetCurrentPerson') {
+          return { Id: 1, PrimaryAliasId: 10, Guid: '550e8400-e29b-41d4-a716-446655440001' };
         }
         if (path.includes('/api/Groups')) {
           return [{ Id: 99, Name: 'RSR - Rock Administration' }];
@@ -183,8 +454,8 @@ describe('RockUserResolver', () => {
     };
 
     mockClient.get = vi.fn().mockImplementation(async (_ctx, path) => {
-      if (path.includes('/api/People')) {
-        return [{ Id: 4, PrimaryAliasId: 40, Guid: '550e8400-e29b-41d4-a716-446655440004' }];
+      if (path === '/api/People/GetCurrentPerson') {
+        return { Id: 4, PrimaryAliasId: 40, Guid: '550e8400-e29b-41d4-a716-446655440004' };
       }
       if (path.includes('/api/Groups')) {
         // Non-admins may not be able to read the RSR group at all
@@ -207,8 +478,8 @@ describe('RockUserResolver', () => {
     };
 
     mockClient.get = vi.fn().mockImplementation(async (_ctx, path) => {
-      if (path.includes('/api/People')) {
-        return [{ Id: 5, PrimaryAliasId: 50, Guid: '550e8400-e29b-41d4-a716-446655440005' }];
+      if (path === '/api/People/GetCurrentPerson') {
+        return { Id: 5, PrimaryAliasId: 50, Guid: '550e8400-e29b-41d4-a716-446655440005' };
       }
       if (path.includes('/api/Groups')) {
         return [{ Id: 99, Name: 'RSR - Rock Administration' }];
@@ -229,8 +500,8 @@ describe('RockUserResolver', () => {
     // A non-admin who is a member of "RSR - Staff Workers".
     function staffWorkerClient(): void {
       mockClient.get = vi.fn().mockImplementation(async (_ctx, path) => {
-        if (path.includes('/api/People')) {
-          return [{ Id: 7, PrimaryAliasId: 70, Guid: '550e8400-e29b-41d4-a716-446655440007' }];
+        if (path === '/api/People/GetCurrentPerson') {
+          return { Id: 7, PrimaryAliasId: 70, Guid: '550e8400-e29b-41d4-a716-446655440007' };
         }
         if (path.includes('/api/Groups')) {
           if (path.includes('Rock Administration')) return [{ Id: 99, Name: 'RSR - Rock Administration' }];
@@ -256,8 +527,8 @@ describe('RockUserResolver', () => {
 
     it('returns isStaff true for a Staff Like Workers member (second default role)', async () => {
       mockClient.get = vi.fn().mockImplementation(async (_ctx, path) => {
-        if (path.includes('/api/People')) {
-          return [{ Id: 8, PrimaryAliasId: 80, Guid: '550e8400-e29b-41d4-a716-446655440008' }];
+        if (path === '/api/People/GetCurrentPerson') {
+          return { Id: 8, PrimaryAliasId: 80, Guid: '550e8400-e29b-41d4-a716-446655440008' };
         }
         if (path.includes('/api/Groups')) {
           if (path.includes('Staff Like Workers')) return [{ Id: 51, Name: 'RSR - Staff Like Workers' }];
@@ -276,8 +547,8 @@ describe('RockUserResolver', () => {
 
     it('returns isStaff false when the person is in neither staff role', async () => {
       mockClient.get = vi.fn().mockImplementation(async (_ctx, path) => {
-        if (path.includes('/api/People')) {
-          return [{ Id: 9, PrimaryAliasId: 90, Guid: '550e8400-e29b-41d4-a716-446655440009' }];
+        if (path === '/api/People/GetCurrentPerson') {
+          return { Id: 9, PrimaryAliasId: 90, Guid: '550e8400-e29b-41d4-a716-446655440009' };
         }
         if (path.includes('/api/Groups')) return [{ Id: 50, Name: 'RSR - Staff Workers' }];
         if (path.includes('/api/GroupMembers')) return []; // member of nothing
@@ -293,8 +564,8 @@ describe('RockUserResolver', () => {
       process.env.ROCK_STAFF_ROLE_NAMES = 'Custom Staff Role';
       try {
         mockClient.get = vi.fn().mockImplementation(async (_ctx, path) => {
-          if (path.includes('/api/People')) {
-            return [{ Id: 11, PrimaryAliasId: 110, Guid: '550e8400-e29b-41d4-a716-446655440011' }];
+          if (path === '/api/People/GetCurrentPerson') {
+            return { Id: 11, PrimaryAliasId: 110, Guid: '550e8400-e29b-41d4-a716-446655440011' };
           }
           if (path.includes('/api/Groups')) {
             if (path.includes('Custom Staff Role')) return [{ Id: 60, Name: 'Custom Staff Role' }];
@@ -339,8 +610,8 @@ describe('ledGroupIds / getLedGroupIds', () => {
   function nonAdminClient(personId: number, leadershipResult: any[] | Error): RockClient {
     const client = createMockClient();
     client.get = vi.fn().mockImplementation(async (_ctx, path: string) => {
-      if (path.includes('/api/People')) {
-        return [{ Id: personId, PrimaryAliasId: personId * 10, Guid: `guid-${personId}` }];
+      if (path === '/api/People/GetCurrentPerson') {
+        return { Id: personId, PrimaryAliasId: personId * 10, Guid: `guid-${personId}` };
       }
       if (path.includes('/api/Groups')) {
         // No RSR admin / staff role groups exist for this person — isRsrAdmin
@@ -405,11 +676,11 @@ describe('ledGroupIds / getLedGroupIds', () => {
     expect(result.ledGroupIds).toEqual([]);
   });
 
-  it('skips the leadership query entirely for admins and sets ledGroupIds to []', async () => {
+  it('discards led-group results for admins after concurrent authorization lookups', async () => {
     const leadershipQuery = vi.fn();
     mockClient.get = vi.fn().mockImplementation(async (_ctx, path: string) => {
-      if (path.includes('/api/People')) {
-        return [{ Id: 6, PrimaryAliasId: 60, Guid: 'guid-6' }];
+      if (path === '/api/People/GetCurrentPerson') {
+        return { Id: 6, PrimaryAliasId: 60, Guid: 'guid-6' };
       }
       if (path.includes('/api/Groups')) {
         if (path.includes('Rock Administration')) return [{ Id: 99, Name: 'RSR - Rock Administration' }];
@@ -433,7 +704,7 @@ describe('ledGroupIds / getLedGroupIds', () => {
 
     expect(result.isRsrAdmin).toBe(true);
     expect(result.ledGroupIds).toEqual([]);
-    expect(leadershipQuery).not.toHaveBeenCalled();
+    expect(leadershipQuery).toHaveBeenCalledTimes(1);
   });
 
   it('is always present ([]) on a resolved non-admin, non-leader user', async () => {

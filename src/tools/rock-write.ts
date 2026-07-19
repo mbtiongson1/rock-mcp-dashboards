@@ -55,11 +55,18 @@ const rockWriteSchema = z.discriminatedUnion('action', [
 function getRestV1Path(model: string): string {
   const lower = model.toLowerCase();
   if (lower === 'people' || lower === 'person') return 'People';
+  if (lower === 'phonenumbers' || lower === 'phonenumber') return 'PhoneNumbers';
+  if (lower === 'notes' || lower === 'note') return 'Notes';
   if (lower === 'grouptypes' || lower === 'grouptype') return 'GroupTypes';
   if (lower === 'groups' || lower === 'group') return 'Groups';
   if (lower === 'campuses' || lower === 'campus') return 'Campuses';
   if (lower === 'userlogins' || lower === 'userlogin') return 'UserLogins';
   if (lower === 'groupmembers' || lower === 'groupmember') return 'GroupMembers';
+  if (lower === 'attendances' || lower === 'attendance') return 'Attendances';
+  if (lower === 'attendanceoccurrences' || lower === 'attendanceoccurrence') return 'AttendanceOccurrences';
+  if (lower === 'connectionrequests' || lower === 'connectionrequest') return 'ConnectionRequests';
+  if (lower === 'workflows' || lower === 'workflow') return 'Workflows';
+  if (lower === 'workflowactivities' || lower === 'workflowactivity') return 'WorkflowActivities';
   return model.charAt(0).toUpperCase() + model.slice(1);
 }
 
@@ -104,7 +111,7 @@ export const rockWriteTool: GatewayTool = {
     const shouldMutate = commit && !dryRun;
 
     // Build authorization descriptor based on action
-    let descriptor: any = {
+    const descriptor: any = {
       tool: 'rock_write',
       action,
       model,
@@ -193,7 +200,7 @@ export const rockWriteTool: GatewayTool = {
     if (action === 'create') {
       const { data } = parsed as any;
       try {
-        const result = await rockClient.post(ctx, `/api/v2/models/${model}`, data);
+        const result = await rockClient.post(ctx, `/api/${getRestV1Path(model)}`, data);
 
         auditLogger.log(ctx, {
           tool: 'rock_write',
@@ -206,47 +213,29 @@ export const rockWriteTool: GatewayTool = {
         });
 
         return formatResponse(action, ctx, { committed: true, result });
-      } catch (_err) {
-        // Fall back to REST v1 POST
-        try {
-          const v1Path = getRestV1Path(model);
-          const result = await rockClient.post(ctx, `/api/${v1Path}`, data);
+      } catch (err: any) {
+        auditLogger.log(ctx, {
+          tool: 'rock_write',
+          action,
+          target: { model },
+          dryRun: false,
+          commit: true,
+          reason,
+          outcome: 'error',
+          errorCode: 'CREATE_ERROR',
+        });
 
-          auditLogger.log(ctx, {
-            tool: 'rock_write',
-            action,
-            target: { model },
-            dryRun: false,
-            commit: true,
-            reason: `${reason} (via REST v1 fallback)`,
-            outcome: 'success',
-          });
-
-          return formatResponse(action, ctx, { committed: true, result }, undefined, 'Fell back to REST v1');
-        } catch (v1Err: any) {
-          auditLogger.log(ctx, {
-            tool: 'rock_write',
-            action,
-            target: { model },
-            dryRun: false,
-            commit: true,
-            reason,
-            outcome: 'error',
-            errorCode: 'CREATE_ERROR',
-          });
-
-          return formatResponse(action, ctx, null, {
-            code: 'CREATE_ERROR',
-            message: `CREATE failed on v2 and v1: ${v1Err.message}`,
-          });
-        }
+        return formatResponse(action, ctx, null, {
+          code: 'CREATE_ERROR',
+          message: `CREATE failed: ${err.message}`,
+        });
       }
     }
 
     if (action === 'patch') {
       const { data, id } = parsed as any;
       try {
-        const result = await rockClient.patch(ctx, `/api/v2/models/${model}/${id}`, data);
+        const result = await rockClient.patch(ctx, `/api/${getRestV1Path(model)}/${id}`, data);
 
         auditLogger.log(ctx, {
           tool: 'rock_write',
@@ -259,46 +248,31 @@ export const rockWriteTool: GatewayTool = {
         });
 
         return formatResponse(action, ctx, { committed: true, result });
-      } catch (_err) {
-        // Fall back to REST v1 PATCH
-        try {
-          const v1Path = getRestV1Path(model);
-          const result = await rockClient.patch(ctx, `/api/${v1Path}/${id}`, data);
+      } catch (err: any) {
+        auditLogger.log(ctx, {
+          tool: 'rock_write',
+          action,
+          target: { model, id },
+          dryRun: false,
+          commit: true,
+          reason,
+          outcome: 'error',
+          errorCode: 'PATCH_ERROR',
+        });
 
-          auditLogger.log(ctx, {
-            tool: 'rock_write',
-            action,
-            target: { model, id },
-            dryRun: false,
-            commit: true,
-            reason: `${reason} (via REST v1 fallback)`,
-            outcome: 'success',
-          });
-
-          return formatResponse(action, ctx, { committed: true, result }, undefined, 'Fell back to REST v1');
-        } catch (v1Err: any) {
-          auditLogger.log(ctx, {
-            tool: 'rock_write',
-            action,
-            target: { model, id },
-            dryRun: false,
-            commit: true,
-            reason,
-            outcome: 'error',
-            errorCode: 'PATCH_ERROR',
-          });
-
-          return formatResponse(action, ctx, null, {
-            code: 'PATCH_ERROR',
-            message: `PATCH failed on v2 and v1: ${v1Err.message}`,
-          });
-        }
+        return formatResponse(action, ctx, null, {
+          code: 'PATCH_ERROR',
+          message: `PATCH failed: ${err.message}`,
+        });
       }
     }
 
     if (action === 'patchAttributes') {
       const { id, attributes } = parsed as any;
       try {
+        // Attribute writes are the one specialized operation without a clean
+        // generic REST v1 equivalent; this is not part of the former v2-first
+        // entity-write fallback used by create/patch/delete/bulkPatch.
         const result = await rockClient.patch(ctx, `/api/v2/models/${model}/${id}/attributevalues`, attributes);
 
         auditLogger.log(ctx, {
@@ -334,7 +308,7 @@ export const rockWriteTool: GatewayTool = {
     if (action === 'delete') {
       const { id } = parsed as any;
       try {
-        const result = await rockClient.delete(ctx, `/api/v2/models/${model}/${id}`);
+        const result = await rockClient.delete(ctx, `/api/${getRestV1Path(model)}/${id}`);
 
         auditLogger.log(ctx, {
           tool: 'rock_write',
@@ -347,40 +321,22 @@ export const rockWriteTool: GatewayTool = {
         });
 
         return formatResponse(action, ctx, { committed: true, result });
-      } catch (_err) {
-        // Fall back to REST v1 DELETE
-        try {
-          const v1Path = getRestV1Path(model);
-          const result = await rockClient.delete(ctx, `/api/${v1Path}/${id}`);
+      } catch (err: any) {
+        auditLogger.log(ctx, {
+          tool: 'rock_write',
+          action,
+          target: { model, id },
+          dryRun: false,
+          commit: true,
+          reason,
+          outcome: 'error',
+          errorCode: 'DELETE_ERROR',
+        });
 
-          auditLogger.log(ctx, {
-            tool: 'rock_write',
-            action,
-            target: { model, id },
-            dryRun: false,
-            commit: true,
-            reason: `${reason} (via REST v1 fallback)`,
-            outcome: 'success',
-          });
-
-          return formatResponse(action, ctx, { committed: true, result }, undefined, 'Fell back to REST v1');
-        } catch (v1Err: any) {
-          auditLogger.log(ctx, {
-            tool: 'rock_write',
-            action,
-            target: { model, id },
-            dryRun: false,
-            commit: true,
-            reason,
-            outcome: 'error',
-            errorCode: 'DELETE_ERROR',
-          });
-
-          return formatResponse(action, ctx, null, {
-            code: 'DELETE_ERROR',
-            message: `DELETE failed on v2 and v1: ${v1Err.message}`,
-          });
-        }
+        return formatResponse(action, ctx, null, {
+          code: 'DELETE_ERROR',
+          message: `DELETE failed: ${err.message}`,
+        });
       }
     }
 
@@ -389,10 +345,11 @@ export const rockWriteTool: GatewayTool = {
       const results: Array<{ id: string | number; ok: boolean; error?: string }> = [];
       let succeeded = 0;
       let failed = 0;
+      const v1Path = getRestV1Path(model);
 
       for (const item of items) {
         try {
-          await rockClient.patch(ctx, `/api/v2/models/${model}/${item.id}`, item.data);
+          await rockClient.patch(ctx, `/api/${v1Path}/${item.id}`, item.data);
           results.push({ id: item.id, ok: true });
           succeeded++;
         } catch (err: any) {

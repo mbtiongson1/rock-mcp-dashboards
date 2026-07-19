@@ -1,7 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-// @ts-ignore
 import { rockWriteTool } from '../../src/tools/rock-write.js';
-// @ts-ignore
 import { OAuthRockContext } from '../../src/http/oauth.js';
 
 describe('rock_write tool', () => {
@@ -63,7 +61,7 @@ describe('rock_write tool', () => {
     expect(response.result.dryRun).toBe(true);
   });
 
-  it('should call client.patch if commit is true and reason is provided', async () => {
+  it('should patch the REST v1 endpoint if commit is true and reason is provided', async () => {
     mockClient.patch.mockResolvedValue({ Id: 123, NickName: 'Alex' });
 
     const result = await rockWriteTool.handle(
@@ -74,9 +72,10 @@ describe('rock_write tool', () => {
 
     expect(mockClient.patch).toHaveBeenCalledWith(
       mockCtx,
-      '/api/v2/models/people/123',
+      '/api/People/123',
       expect.objectContaining({ NickName: 'Alex' })
     );
+    expect(mockClient.patch).toHaveBeenCalledTimes(1);
     const response = JSON.parse(result.content[0].text!);
     expect(response.ok).toBe(true);
   });
@@ -115,7 +114,8 @@ describe('rock_write tool', () => {
       mockCtx
     );
 
-    expect(mockClient.delete).toHaveBeenCalled();
+    expect(mockClient.delete).toHaveBeenCalledWith(mockCtx, '/api/GroupMembers/123');
+    expect(mockClient.delete).toHaveBeenCalledTimes(1);
     const response = JSON.parse(result.content[0].text!);
     expect(response.ok).toBe(true);
   });
@@ -156,7 +156,7 @@ describe('rock_write tool', () => {
     expect(response.result.dryRun).toBe(true);
   });
 
-  it('create: should post to v2 endpoint on commit', async () => {
+  it('create: should post directly to the REST v1 endpoint on commit', async () => {
     mockClient.post.mockResolvedValue({ Id: 999, EntityId: 123, Text: 'Hello' });
 
     const result = await rockWriteTool.handle(
@@ -167,12 +167,38 @@ describe('rock_write tool', () => {
 
     expect(mockClient.post).toHaveBeenCalledWith(
       mockCtx,
-      '/api/v2/models/notes',
+      '/api/Notes',
       expect.objectContaining({ EntityId: 123, Text: 'Hello' })
     );
+    expect(mockClient.post).toHaveBeenCalledTimes(1);
     const response = JSON.parse(result.content[0].text!);
     expect(response.ok).toBe(true);
     expect(response.result.committed).toBe(true);
+    expect(response.warning).toBeUndefined();
+  });
+
+  it('create: should use the canonical REST v1 path for connection requests', async () => {
+    mockClient.post.mockResolvedValue({ Id: 1000 });
+
+    await rockWriteTool.handle(
+      {
+        action: 'create',
+        model: 'connectionrequests',
+        data: { PersonAliasId: 123, ConnectionOpportunityId: 456 },
+        commit: true,
+        dryRun: false,
+        reason: 'Create connection request',
+      },
+      null,
+      mockCtx
+    );
+
+    expect(mockClient.post).toHaveBeenCalledWith(
+      mockCtx,
+      '/api/ConnectionRequests',
+      expect.objectContaining({ PersonAliasId: 123, ConnectionOpportunityId: 456 })
+    );
+    expect(mockClient.post).toHaveBeenCalledTimes(1);
   });
 
   it('create: should deny on disallowed model', async () => {
@@ -289,8 +315,8 @@ describe('rock_write tool', () => {
     );
 
     expect(mockClient.patch).toHaveBeenCalledTimes(2);
-    expect(mockClient.patch).toHaveBeenNthCalledWith(1, mockCtx, '/api/v2/models/people/1', expect.objectContaining({ Email: 'test1@example.com' }));
-    expect(mockClient.patch).toHaveBeenNthCalledWith(2, mockCtx, '/api/v2/models/people/2', expect.objectContaining({ Email: 'test2@example.com' }));
+    expect(mockClient.patch).toHaveBeenNthCalledWith(1, mockCtx, '/api/People/1', expect.objectContaining({ Email: 'test1@example.com' }));
+    expect(mockClient.patch).toHaveBeenNthCalledWith(2, mockCtx, '/api/People/2', expect.objectContaining({ Email: 'test2@example.com' }));
 
     const response = JSON.parse(result.content[0].text!);
     expect(response.ok).toBe(true);
