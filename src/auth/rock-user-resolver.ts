@@ -2,7 +2,7 @@ import * as crypto from 'crypto';
 import type { Redis } from '@upstash/redis';
 import { RockClient } from '../rock/client.js';
 import { OAuthRockContext } from '../http/oauth.js';
-import { quoteODataString, assertValidGuid } from '../rock/query.js';
+import { quoteODataString } from '../rock/query.js';
 import { getRedisPrefix } from '../rock/redis.js';
 
 /**
@@ -40,62 +40,43 @@ export interface ResolvedRockUser {
   ledGroupIds: number[];
 }
 
-interface CacheEntry<T> {
-  value: T;
-  expiresAt: number;
+interface PersonMetadata {
+  personGuid?: string;
+  personAliasId?: number;
 }
 
-interface UserResolutionCacheRecord {
+interface PersonMetadataCacheRecord {
   version: 1;
-  subjectHash: string;
   expiresAt: number;
-  user: ResolvedRockUser;
+  metadata: PersonMetadata;
 }
 
-const USER_RESOLUTION_TTL_SECONDS = 900;
+const PERSON_METADATA_TTL_SECONDS = 900;
 
-function isOptionalInteger(value: unknown): boolean {
-  return value === undefined || (typeof value === 'number' && Number.isInteger(value) && value > 0);
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0;
 }
 
-function isOptionalString(value: unknown): boolean {
-  return value === undefined || (typeof value === 'string' && value.length > 0);
-}
-
-function isResolvedRockUser(value: unknown): value is ResolvedRockUser {
-  if (!value || typeof value !== 'object') return false;
-  const user = value as Record<string, unknown>;
-  if (!isOptionalInteger(user.personId)) return false;
-  if (!isOptionalString(user.personGuid)) return false;
-  if (!isOptionalInteger(user.personAliasId)) return false;
-  if (!isOptionalInteger(user.userLoginId)) return false;
-  if (!isOptionalString(user.userName)) return false;
-  if (typeof user.isRsrAdmin !== 'boolean' || typeof user.isStaff !== 'boolean') return false;
-  if (!Array.isArray(user.ledGroupIds) || !user.ledGroupIds.every((id) => isOptionalInteger(id) && id !== undefined)) {
-    return false;
-  }
-
-  // Reject privilege-bearing records that cannot have come from live resolution.
-  if (user.isRsrAdmin && !user.isStaff) return false;
-  if (user.personId === undefined && (user.isRsrAdmin || user.isStaff || user.ledGroupIds.length > 0)) return false;
-  return true;
-}
-
-function parseUserResolutionCacheRecord(
+function parsePersonMetadataCacheRecord(
   cached: unknown,
-  subjectHash: string,
   now: number
-): UserResolutionCacheRecord | null {
+): PersonMetadataCacheRecord | null {
   try {
     const parsed = typeof cached === 'string' ? JSON.parse(cached) as unknown : cached;
     if (!parsed || typeof parsed !== 'object') return null;
     const record = parsed as Record<string, unknown>;
-    if (record.version !== 1 || record.subjectHash !== subjectHash) return null;
+    if (record.version !== 1) return null;
     if (typeof record.expiresAt !== 'number' || !Number.isFinite(record.expiresAt) || record.expiresAt <= now) {
       return null;
     }
-    if (!isResolvedRockUser(record.user)) return null;
-    return record as unknown as UserResolutionCacheRecord;
+    if (!record.metadata || typeof record.metadata !== 'object') return null;
+    const metadata = record.metadata as Record<string, unknown>;
+    if (metadata.personGuid !== undefined && (typeof metadata.personGuid !== 'string' || metadata.personGuid.length === 0)) {
+      return null;
+    }
+    if (metadata.personAliasId !== undefined && !isPositiveInteger(metadata.personAliasId)) return null;
+    if (metadata.personGuid === undefined && metadata.personAliasId === undefined) return null;
+    return record as unknown as PersonMetadataCacheRecord;
   } catch {
     return null;
   }
@@ -109,7 +90,6 @@ export class RockUserResolver {
    * comma-separated `ROCK_STAFF_ROLE_NAMES` env var.
    */
   private static DEFAULT_STAFF_ROLE_NAMES = ['RSR - Staff Workers', 'RSR - Staff Like Workers'];
-  private cache = new Map<string, CacheEntry<unknown>>();
 
   /** Resolve the configured staff role names (env override or defaults). */
   private staffRoleNames(): string[] {
@@ -130,101 +110,84 @@ export class RockUserResolver {
     private redisPrefix: string = getRedisPrefix()
   ) {}
 
-  private getCached<T>(key: string): T | null {
-    const entry = this.cache.get(key);
-    if (!entry) return null;
-    if (Date.now() > entry.expiresAt) {
-      this.cache.delete(key);
-      return null;
-    }
-    return entry.value as T;
-  }
-
-  private setCached<T>(key: string, value: T, ttlMs: number): void {
-    this.cache.set(key, {
-      value,
-      expiresAt: Date.now() + ttlMs,
-    });
-  }
-
-  private getUserResolutionCacheIdentity(subject: string): { cacheKey: string; subjectHash: string } {
-    const subjectHash = crypto.createHash('sha256').update(subject).digest('hex').slice(0, 24);
+  private getPersonMetadataCacheKey(personId: number): string {
     const rockBaseUrlHash = crypto
       .createHash('sha256')
       .update(this.rockClient.baseUrl || 'default-rock-server')
       .digest('hex')
       .slice(0, 16);
-    return {
-      cacheKey: `${this.redisPrefix}user-resolution:v1:${rockBaseUrlHash}:${subjectHash}`,
-      subjectHash,
-    };
+    const personIdHash = crypto.createHash('sha256').update(String(personId)).digest('hex').slice(0, 16);
+    return `${this.redisPrefix}person-metadata:v1:${rockBaseUrlHash}:${personIdHash}`;
   }
 
-  public async resolve(
-    ctx: OAuthRockContext,
-    oauth: { subject: string; email?: string; rockPersonGuid?: string }
-  ): Promise<ResolvedRockUser> {
-    const { cacheKey, subjectHash } = this.getUserResolutionCacheIdentity(oauth.subject);
-    const cached = this.getCached<ResolvedRockUser>(cacheKey);
-    if (cached && isResolvedRockUser(cached)) return cached;
+  /**
+   * Resolves optional profile metadata that no login or write gate reads.
+   * Live values win over Redis, and Redis failures simply leave the live
+   * identity and privilege checks unaffected.
+   */
+  private async resolvePersonMetadata(person: any): Promise<PersonMetadata> {
+    const liveMetadata: PersonMetadata = {
+      ...(typeof person.Guid === 'string' && person.Guid.length > 0 ? { personGuid: person.Guid } : {}),
+      ...(isPositiveInteger(person.PrimaryAliasId) ? { personAliasId: person.PrimaryAliasId } : {}),
+    };
+    let cachedRecord: PersonMetadataCacheRecord | null = null;
+    const cacheKey = this.getPersonMetadataCacheKey(person.Id);
 
     if (this.redis) {
       try {
         const redisValue = await this.redis.get<unknown>(cacheKey);
-        const record = parseUserResolutionCacheRecord(redisValue, subjectHash, Date.now());
-        if (record) {
-          const remainingTtlMs = record.expiresAt - Date.now();
-          if (remainingTtlMs > 0) {
-            this.setCached(cacheKey, record.user, remainingTtlMs);
-            return record.user;
-          }
-        }
+        cachedRecord = parsePersonMetadataCacheRecord(redisValue, Date.now());
       } catch {
-        // Redis is only an optimization. Resolve live on any read failure.
+        // Redis is only an optimization. Keep the live metadata on read failure.
       }
     }
 
+    const metadata = { ...(cachedRecord?.metadata ?? {}), ...liveMetadata };
+    const liveMetadataChanged =
+      cachedRecord === null ||
+      (liveMetadata.personGuid !== undefined && liveMetadata.personGuid !== cachedRecord.metadata.personGuid) ||
+      (liveMetadata.personAliasId !== undefined && liveMetadata.personAliasId !== cachedRecord.metadata.personAliasId);
+    if (
+      this.redis &&
+      liveMetadataChanged &&
+      (liveMetadata.personGuid !== undefined || liveMetadata.personAliasId !== undefined)
+    ) {
+      const record: PersonMetadataCacheRecord = {
+        version: 1,
+        expiresAt: Date.now() + PERSON_METADATA_TTL_SECONDS * 1000,
+        metadata,
+      };
+      try {
+        await this.redis.set(cacheKey, JSON.stringify(record), { ex: PERSON_METADATA_TTL_SECONDS });
+      } catch {
+        // Profile metadata remains available from the live response when Redis is down.
+      }
+    }
+
+    return metadata;
+  }
+
+  public async resolve(
+    ctx: OAuthRockContext,
+    _oauth: { subject: string; email?: string; rockPersonGuid?: string }
+  ): Promise<ResolvedRockUser> {
     let person: any = null;
 
     // Rock v1 (OData) only — the v2 REST API is unavailable on this instance
     // (401s even with valid credentials).
 
-    // 1. Ask Rock who the Bearer token belongs to. Rock validates the JWT via
+    // Ask Rock who the Bearer token belongs to on every request. Rock validates the JWT via
     // its JSON Web Token Configuration and resolves the person through the
-    // Auth0 person search key, so this works even when the access token
-    // carries no email claim (Auth0 puts email only in the id_token).
+    // Auth0 person search key. This live binding is authoritative: claim-based
+    // fallbacks could preserve a stale subject-to-person mapping when this
+    // lookup fails, so failure leaves the user unresolved and denies access.
     try {
       const me = await this.rockClient.get<any>(ctx, '/api/People/GetCurrentPerson');
       if (me && me.Id) {
         person = me;
       }
     } catch {
-      // Ignore — fall back to claim-based lookups
-    }
-
-    // 2. Resolve by explicit Guid claim if present
-    if (!person && oauth.rockPersonGuid) {
-      const validGuid = assertValidGuid(oauth.rockPersonGuid);
-      try {
-        const results = await this.rockClient.get<any[]>(ctx, `/api/People?$filter=Guid eq guid${quoteODataString(validGuid)}`);
-        if (results && results.length > 0) {
-          person = results[0];
-        }
-      } catch {
-        // Ignore
-      }
-    }
-
-    // 3. Fallback to resolving by email
-    if (!person && oauth.email) {
-      try {
-        const results = await this.rockClient.get<any[]>(ctx, `/api/People?$filter=Email eq ${quoteODataString(oauth.email)}`);
-        if (results && results.length > 0) {
-          person = results[0];
-        }
-      } catch {
-        // Ignore
-      }
+      // Ignore — unresolved is the fail-closed result below.
     }
 
     const resolved: ResolvedRockUser = {
@@ -235,34 +198,20 @@ export class RockUserResolver {
 
     if (person) {
       resolved.personId = person.Id;
-      resolved.personGuid = person.Guid;
-      resolved.personAliasId = person.PrimaryAliasId || person.Id;
 
-      // These checks depend only on the resolved person id, not on each other.
-      const [isRsrAdmin, isStaff, ledGroupIds] = await Promise.all([
+      // These checks and the inert metadata lookup depend only on the resolved
+      // person id, not on each other, so keep them concurrent.
+      const [metadata, isRsrAdmin, isStaff, ledGroupIds] = await Promise.all([
+        this.resolvePersonMetadata(person),
         this.checkRsrAdmin(ctx, person.Id),
         this.checkStaff(ctx, person.Id),
         this.getLedGroupIds(ctx, person.Id),
       ]);
+      resolved.personGuid = metadata.personGuid;
+      resolved.personAliasId = metadata.personAliasId ?? person.Id;
       resolved.isRsrAdmin = isRsrAdmin;
       resolved.isStaff = isRsrAdmin || isStaff;
       resolved.ledGroupIds = isRsrAdmin ? [] : ledGroupIds;
-    }
-
-    const expiresAt = Date.now() + USER_RESOLUTION_TTL_SECONDS * 1000;
-    this.setCached(cacheKey, resolved, USER_RESOLUTION_TTL_SECONDS * 1000);
-    if (this.redis) {
-      const record: UserResolutionCacheRecord = {
-        version: 1,
-        subjectHash,
-        expiresAt,
-        user: resolved,
-      };
-      try {
-        await this.redis.set(cacheKey, JSON.stringify(record), { ex: USER_RESOLUTION_TTL_SECONDS });
-      } catch {
-        // The live result remains authoritative when Redis cannot be populated.
-      }
     }
 
     return resolved;
@@ -291,14 +240,11 @@ export class RockUserResolver {
 
   /**
    * Returns true if `personId` is an Active member of the named Rock security
-   * role. Group-id and membership results are cached. Any Rock error fails
-   * closed (treated as "not a member"), which is the safe default for a gate.
+   * role. Both the role-group mapping and membership are queried live on every
+   * request. Any Rock error fails closed (treated as "not a member"), which is
+   * the safe default for a gate.
    */
   private async isActiveRoleMember(ctx: OAuthRockContext, personId: number, roleName: string): Promise<boolean> {
-    const membershipCacheKey = `role-membership:${personId}:${roleName}`;
-    const cached = this.getCached<boolean>(membershipCacheKey);
-    if (cached !== null) return cached;
-
     try {
       const groupId = await this.resolveRoleGroupId(ctx, roleName);
       if (!groupId) {
@@ -321,7 +267,6 @@ export class RockUserResolver {
         // Ignore — denied lookups mean "not a member"
       }
 
-      this.setCached(membershipCacheKey, isMember, 300000);
       return isMember;
     } catch {
       return false;
@@ -338,10 +283,6 @@ export class RockUserResolver {
    * to `[]` on any Rock error, which is the safe default for a write gate.
    */
   private async getLedGroupIds(ctx: OAuthRockContext, personId: number): Promise<number[]> {
-    const cacheKey = `led-group-ids:${personId}`;
-    const cached = this.getCached<number[]>(cacheKey);
-    if (cached !== null) return cached;
-
     let ledGroupIds: number[] = [];
     try {
       const members = await this.rockClient.get<any[]>(
@@ -359,15 +300,12 @@ export class RockUserResolver {
       // Ignore — denied/failed lookups mean "leads nothing" (fail closed)
     }
 
-    this.setCached(cacheKey, ledGroupIds, 900000);
     return ledGroupIds;
   }
 
-  /** Resolves (and caches) the group Id for a named security role. */
+  /** Resolves the group Id for a named security role live on every request. */
   private async resolveRoleGroupId(ctx: OAuthRockContext, roleName: string): Promise<number | null> {
-    const groupCacheKey = `role-group-id:${roleName}`;
-    let groupId = this.getCached<number>(groupCacheKey);
-    if (groupId) return groupId;
+    let groupId: number | undefined;
 
     try {
       const groups = await this.rockClient.get<any[]>(
@@ -381,9 +319,6 @@ export class RockUserResolver {
       // Ignore — user may not have permission to read groups
     }
 
-    if (groupId) {
-      this.setCached(groupCacheKey, groupId, 3600000);
-    }
     return groupId ?? null;
   }
 }

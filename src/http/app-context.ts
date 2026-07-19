@@ -102,7 +102,7 @@ export async function buildAppContext(options: CreateAppContextOptions = {}): Pr
     : new InMemoryDatasetStore();
 
   if (redis) {
-    console.log('[Rock MCP] Using Redis cache for discovery, datasets, and user resolution');
+    console.log('[Rock MCP] Using Redis cache for discovery, datasets, and non-authorization profile metadata');
   } else {
     console.log('[Rock MCP] Using in-memory cache (Redis not configured)');
   }
