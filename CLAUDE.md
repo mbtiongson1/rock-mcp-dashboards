@@ -124,6 +124,11 @@ but read it only if explicitly asked — see the note at the top of this file.)
 - Bearer-JWT auth to Rock needs a JWT Config defined value and a search-key backfill from the
   `AUTH0_*` UserLogins on the Rock side.
 - `Reports/run` can 404; use `$select=Id` when you only need counts.
+- **v1 OData pagination:** `$skip` requires a preceding `$orderby`, or Rock 500s
+  (*"The method 'Skip' is only supported for sorted input… 'OrderBy' must be
+  called before the method 'Skip'"*). Build paginated v1 queries via
+  `odataPagination()` in `src/rock/query.ts`, which always emits `$orderby`
+  (default `Id`) before `$skip`.
 - Never compare an enum (e.g. `GroupMemberStatus`) to an integer in a v1 OData
   `$filter` — the EDM type is string and Rock 400s (*"incompatible types
   'Edm.String' and 'Edm.Int32'"*). Filter by ids only and check the enum
