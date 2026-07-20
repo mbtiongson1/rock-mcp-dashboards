@@ -4,7 +4,6 @@ import { RockClient, RockApiError } from '../rock/client.js';
 import { OAuthRockContext } from '../http/oauth.js';
 import { quoteODataString } from '../rock/query.js';
 import { getRedisPrefix } from '../rock/redis.js';
-import { hashOAuthSubject } from './audit.js';
 
 /**
  * True if a GroupMember's `GroupMemberStatus` represents "Active". Rock's enum
@@ -208,7 +207,7 @@ export class RockUserResolver {
         // expiring at rock-mcp's gate (hypothesis a — that path never reaches here).
         console.warn(
           '[rock-user-resolver] Rock rejected forwarded token (401) during GetCurrentPerson; user left unresolved (fail-closed)',
-          { subjectHash: hashOAuthSubject(oauth.subject) }
+          { subjectHash: crypto.createHash('sha256').update(oauth.subject || '').digest('hex') }
         );
       }
       // Ignore — unresolved is the fail-closed result below.
