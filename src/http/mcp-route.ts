@@ -109,9 +109,11 @@ export async function handleMcpPost(
     if (!resolvedUser.personId) {
       const email = ctx.oauth.email || ctx.oauth.subject;
       if (resolvedUser.tokenRejectedByRock) {
+        // Correlate by the non-sensitive session id; the audit event below
+        // carries oauthSubjectHash for per-user correlation.
         console.error(
           '[mcp route] Rock rejected the forwarded token (401) during resolution — not an unlinked-person case',
-          { subjectHash: crypto.createHash('sha256').update(ctx.oauth.subject || '').digest('hex') }
+          { sessionId: ctx.request?.sessionId }
         );
         throw new PersonResolutionError(
           `Rock rejected your access token (401). This is usually a transient or expired-token issue — retry, and re-authenticate if it persists.`,

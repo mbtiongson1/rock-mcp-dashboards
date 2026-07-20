@@ -181,7 +181,7 @@ export class RockUserResolver {
 
   public async resolve(
     ctx: OAuthRockContext,
-    oauth: { subject: string; email?: string; rockPersonGuid?: string }
+    _oauth: { subject: string; email?: string; rockPersonGuid?: string }
   ): Promise<ResolvedRockUser> {
     let person: any = null;
 
@@ -205,9 +205,13 @@ export class RockUserResolver {
         // Correlatable log line: a burst of these means Rock is rejecting
         // forwarded tokens (hypothesis c), as opposed to the client's own token
         // expiring at rock-mcp's gate (hypothesis a — that path never reaches here).
+        // Log only the non-sensitive session id — never the raw OAuth subject
+        // (clear-text logging) nor a fresh sha256 of it (CodeQL flags an OAuth value
+        // hashed with sha256 as insecure password hashing). Per-user correlation is
+        // still captured downstream via the audit event's oauthSubjectHash.
         console.warn(
           '[rock-user-resolver] Rock rejected forwarded token (401) during GetCurrentPerson; user left unresolved (fail-closed)',
-          { subjectHash: crypto.createHash('sha256').update(oauth.subject || '').digest('hex') }
+          { sessionId: ctx.request?.sessionId }
         );
       }
       // Ignore — unresolved is the fail-closed result below.
