@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { rockEntityTool } from '../../src/tools/rock-entity.js';
 // @ts-ignore
 import { OAuthRockContext } from '../../src/http/oauth.js';
+import { RockApiError } from '../../src/rock/client.js';
 
 describe('rock_entity tool', () => {
   let mockClient: any;
@@ -51,6 +52,55 @@ describe('rock_entity tool', () => {
     );
     const response = JSON.parse(result.content[0].text!);
     expect(response.result[0].Name).toBe('Alex Santos');
+  });
+
+  describe('search hardening (findings #4, #5)', () => {
+    it('emits $orderby before $skip in the v1 fallback when offset > 0', async () => {
+      mockClient.post.mockRejectedValue(new RockApiError(500, 'Internal Server Error', 'boom')); // force v1 fallback
+      mockClient.get.mockResolvedValue([{ Id: 1 }]);
+
+      await rockEntityTool.handle(
+        { action: 'search', model: 'workflows', where: 'IsActive == true', offset: 100, limit: 50 },
+        null,
+        mockCtx
+      );
+
+      const url = decodeURIComponent(String((mockClient.get as any).mock.calls[0][1]));
+      expect(url).toContain('$orderby=Id');
+      expect(url).toContain('$skip=100');
+      expect(url.indexOf('$orderby')).toBeLessThan(url.indexOf('$skip'));
+    });
+
+    it('re-surfaces the "No property or field" 500 body as an actionable message', async () => {
+      const body = JSON.stringify({ Message: "No property or field 'PersonId' exists in type 'ConnectionRequest'" });
+      mockClient.post.mockRejectedValue(new RockApiError(500, 'Internal Server Error', body));
+      mockClient.get.mockRejectedValue(new RockApiError(500, 'Internal Server Error', body));
+
+      const result = await rockEntityTool.handle(
+        { action: 'search', model: 'connectionrequests', where: 'PersonId == 5' },
+        null,
+        mockCtx
+      );
+      const response = JSON.parse(result.content[0].text!);
+      expect(response.ok).toBe(false);
+      expect(response.error.message).toContain("No property or field 'PersonId' exists in type 'ConnectionRequest'");
+      expect(response.error.message).toMatch(/PersonAlias/); // the related-entity tip
+    });
+
+    it('keeps a generic 500 body suppressed (no PII leak)', async () => {
+      const body = JSON.stringify({ Message: 'An error has occurred.' });
+      mockClient.post.mockRejectedValue(new RockApiError(500, 'Internal Server Error', body));
+      mockClient.get.mockRejectedValue(new RockApiError(500, 'Internal Server Error', body));
+
+      const result = await rockEntityTool.handle(
+        { action: 'search', model: 'attendanceoccurrences', where: 'Id == 34164' },
+        null,
+        mockCtx
+      );
+      const response = JSON.parse(result.content[0].text!);
+      expect(response.ok).toBe(false);
+      expect(response.error.message).not.toContain('An error has occurred.');
+    });
   });
 
   it('should handle searchByKey action with model specified', async () => {

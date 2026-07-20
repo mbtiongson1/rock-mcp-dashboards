@@ -4,7 +4,7 @@ import { McpMode, McpScope } from '../mcp/modes.js';
 import { OAuthRockContext } from '../http/oauth.js';
 import { formatResponse } from './formatter.js';
 import { RockClient, RockApiError } from '../rock/client.js';
-import { linqToOData } from '../rock/query.js';
+import { linqToOData, odataPagination } from '../rock/query.js';
 
 /**
  * Describe a v2 -> v1 fallback double-failure for the caller. The v2 error is
@@ -43,6 +43,27 @@ function safeReason(err: unknown): string | null {
   }
   const MAX = 300;
   return message.length > MAX ? `${message.slice(0, MAX)}…` : message;
+}
+
+/**
+ * Re-surface Rock's "No property or field 'X' exists in type 'Y'" message.
+ * Rock mislabels a caller's bad field reference as HTTP 500, so `safeReason`
+ * (4xx-only) suppresses it — but this exact shape is a caller fault carrying no
+ * PII, so echoing it turns an opaque 500 into an actionable error. Any OTHER 5xx
+ * body (e.g. "An error has occurred.") still returns null and stays server-side.
+ */
+function wrongFieldReason(err: unknown): string | null {
+  if (!(err instanceof RockApiError) || err.status !== 500) return null;
+  const body = err.bodyText?.trim();
+  if (!body) return null;
+  let message = body;
+  try {
+    const parsed = JSON.parse(body);
+    if (parsed && typeof parsed.Message === 'string') message = parsed.Message;
+  } catch {
+    // Not JSON — use the raw body.
+  }
+  return /No property or field '.+?' exists in type '.+?'/.test(message) ? message : null;
 }
 
 /**
@@ -105,7 +126,7 @@ const rockEntitySchema = z.discriminatedUnion('action', [
     action: z.literal('search'),
     model: z.string().min(1).describe(MODEL_DESCRIPTION),
     where: z.string().min(1).optional()
-      .describe("LINQ-style filter, e.g. 'PrimaryCampusId == 2 && IsActive == true'."),
+      .describe("LINQ-style filter, e.g. 'PrimaryCampusId == 2 && IsActive == true'. Some fields live on a related entity — e.g. filter ConnectionRequests by 'PersonAlias.PersonId == <id>', not 'PersonId'."),
     select: z.string().min(1).optional(),
     sort: z.string().min(1).optional(),
     offset: z.coerce.number().int().nonnegative().default(0),
@@ -330,11 +351,10 @@ export const rockEntityTool: GatewayTool = {
           if (where) {
             params.push(`$filter=${encodeURIComponent(linqToOData(where))}`);
           }
-          if (limit) {
-            params.push(`$top=${limit}`);
-          }
-          if (offset) {
-            params.push(`$skip=${offset}`);
+          // Always sorts before skipping — Rock 500s on $skip without $orderby.
+          const pagination = odataPagination({ top: limit, skip: offset });
+          if (pagination) {
+            params.push(pagination);
           }
           if (params.length > 0) {
             url += `?${params.join('&')}`;
@@ -342,9 +362,17 @@ export const rockEntityTool: GatewayTool = {
           const result = await rockClient.get(ctx, url);
           return formatResponse(parsed.action, ctx, result, undefined, 'Fell back to REST v1');
         } catch (v1Err) {
+          // Rock returns a clear "No property or field 'X' exists in type 'Y'"
+          // as a 500 (safeReason suppresses 5xx); re-surface just that shape,
+          // with a hint that some fields live on a related entity.
+          const fieldMiss = wrongFieldReason(v2Err) ?? wrongFieldReason(v1Err);
+          const base = describeFallbackFailure('Search', v2Err, v1Err);
+          const message = fieldMiss
+            ? `${base}: ${fieldMiss} (tip: some fields live on a related entity — e.g. filter ConnectionRequests by PersonAlias.PersonId, not PersonId)`
+            : base;
           return formatResponse(parsed.action, ctx, null, {
             code: 'SEARCH_ERROR',
-            message: describeFallbackFailure('Search', v2Err, v1Err),
+            message,
           });
         }
       }
