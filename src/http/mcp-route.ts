@@ -108,6 +108,16 @@ export async function handleMcpPost(
     // real Rock person, regardless of token scopes.
     if (!resolvedUser.personId) {
       const email = ctx.oauth.email || ctx.oauth.subject;
+      if (resolvedUser.tokenRejectedByRock) {
+        console.error(
+          '[mcp route] Rock rejected the forwarded token (401) during resolution — not an unlinked-person case',
+          { subject: ctx.oauth.subject }
+        );
+        throw new PersonResolutionError(
+          `Rock rejected your access token (401). This is usually a transient or expired-token issue — retry, and re-authenticate if it persists.`,
+          email
+        );
+      }
       throw new PersonResolutionError(
         `Your account (${email}) is not linked to a Rock person record. Ask a Rock admin to add this email to your person record.`,
         email
@@ -163,12 +173,16 @@ export async function handleMcpPost(
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Internal server error';
     if (err instanceof PersonResolutionError) {
+      const rockTokenRejected = (ctx.rockUser as { tokenRejectedByRock?: boolean } | undefined)
+        ?.tokenRejectedByRock === true;
       auditLogger.log(ctx, {
         tool: 'mcp',
         action: 'resolveUser',
         outcome: 'denied',
-        errorCode: 'PERSON_NOT_RESOLVED',
-        reason: `Person not resolved for email: ${err.email || 'unknown'}`,
+        errorCode: rockTokenRejected ? 'ROCK_TOKEN_REJECTED' : 'PERSON_NOT_RESOLVED',
+        reason: rockTokenRejected
+          ? `Rock rejected forwarded token (401) for subject: ${ctx.oauth.subject}`
+          : `Person not resolved for email: ${err.email || 'unknown'}`,
       });
       return jsonCors({ error: message }, { status: 403 }, requestOrigin);
     }

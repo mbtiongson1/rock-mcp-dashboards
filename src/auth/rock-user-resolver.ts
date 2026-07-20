@@ -1,6 +1,6 @@
 import * as crypto from 'crypto';
 import type { Redis } from '@upstash/redis';
-import { RockClient } from '../rock/client.js';
+import { RockClient, RockApiError } from '../rock/client.js';
 import { OAuthRockContext } from '../http/oauth.js';
 import { quoteODataString } from '../rock/query.js';
 import { getRedisPrefix } from '../rock/redis.js';
@@ -14,6 +14,11 @@ import { getRedisPrefix } from '../rock/redis.js';
  */
 export function isActiveGroupMemberStatus(status: unknown): boolean {
   return status === 1 || status === 'Active';
+}
+
+/** True when an error is a Rock 401 (forwarded token rejected by Rock). */
+function isRockUnauthorized(err: unknown): boolean {
+  return err instanceof RockApiError && err.status === 401;
 }
 
 export interface ResolvedRockUser {
@@ -38,6 +43,13 @@ export interface ResolvedRockUser {
    * to confirm as a leader.
    */
   ledGroupIds: number[];
+  /**
+   * Telemetry ONLY: true when Rock rejected the forwarded token with a 401
+   * during resolution (GetCurrentPerson). Used to disambiguate the recurring
+   * 401 bursts in logs — it MUST NOT influence any authorization decision;
+   * resolution still fails closed exactly as before.
+   */
+  tokenRejectedByRock?: boolean;
 }
 
 interface PersonMetadata {
@@ -169,7 +181,7 @@ export class RockUserResolver {
 
   public async resolve(
     ctx: OAuthRockContext,
-    _oauth: { subject: string; email?: string; rockPersonGuid?: string }
+    oauth: { subject: string; email?: string; rockPersonGuid?: string }
   ): Promise<ResolvedRockUser> {
     let person: any = null;
 
@@ -181,12 +193,23 @@ export class RockUserResolver {
     // Auth0 person search key. This live binding is authoritative: claim-based
     // fallbacks could preserve a stale subject-to-person mapping when this
     // lookup fails, so failure leaves the user unresolved and denies access.
+    let tokenRejectedByRock = false;
     try {
       const me = await this.rockClient.get<any>(ctx, '/api/People/GetCurrentPerson');
       if (me && me.Id) {
         person = me;
       }
-    } catch {
+    } catch (err) {
+      if (isRockUnauthorized(err)) {
+        tokenRejectedByRock = true;
+        // Correlatable log line: a burst of these means Rock is rejecting
+        // forwarded tokens (hypothesis c), as opposed to the client's own token
+        // expiring at rock-mcp's gate (hypothesis a — that path never reaches here).
+        console.warn(
+          '[rock-user-resolver] Rock rejected forwarded token (401) during GetCurrentPerson; user left unresolved (fail-closed)',
+          { subject: oauth.subject }
+        );
+      }
       // Ignore — unresolved is the fail-closed result below.
     }
 
@@ -194,6 +217,7 @@ export class RockUserResolver {
       isRsrAdmin: false,
       isStaff: false,
       ledGroupIds: [],
+      tokenRejectedByRock,
     };
 
     if (person) {

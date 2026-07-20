@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { RockUserResolver, isActiveGroupMemberStatus } from '../../src/auth/rock-user-resolver.js';
 import { RockClient } from '../../src/rock/client.js';
+import { RockApiError } from '../../src/rock/client.js';
 import { OAuthRockContext } from '../../src/http/oauth.js';
 
 describe('RockUserResolver', () => {
@@ -80,6 +81,27 @@ describe('RockUserResolver', () => {
   beforeEach(() => {
     mockClient = createMockClient();
     resolver = new RockUserResolver(mockClient);
+  });
+
+  describe('Rock-401 observability (finding #1)', () => {
+    it('flags tokenRejectedByRock when GetCurrentPerson 401s, and grants nothing', async () => {
+      vi.mocked(mockClient.get).mockRejectedValue(new RockApiError(401, 'Unauthorized', ''));
+      const resolved = await resolver.resolve(mockCtx, { subject: 'auth0|abc' });
+
+      expect(resolved.tokenRejectedByRock).toBe(true);
+      // Fail-closed is unchanged: no person, no privileges.
+      expect(resolved.personId).toBeUndefined();
+      expect(resolved.isRsrAdmin).toBe(false);
+      expect(resolved.isStaff).toBe(false);
+      expect(resolved.ledGroupIds).toEqual([]);
+    });
+
+    it('does not flag tokenRejectedByRock when the person simply is not found', async () => {
+      vi.mocked(mockClient.get).mockResolvedValue(null); // GetCurrentPerson returns no person, no 401
+      const resolved = await resolver.resolve(mockCtx, { subject: 'auth0|abc' });
+      expect(resolved.tokenRejectedByRock).toBeFalsy();
+      expect(resolved.personId).toBeUndefined();
+    });
   });
 
   it('resolves the user via GetCurrentPerson first (no claims needed)', async () => {
