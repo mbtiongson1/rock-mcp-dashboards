@@ -11,19 +11,8 @@ let currentSortColumn: string | null = null;
 let currentSortDir: 'asc' | 'desc' = 'asc';
 let currentSearchQuery: string = '';
 
-// Connect to MCP Host
-app.connect();
-
-// Resolve from URL query parameters
-const urlParams = new URLSearchParams(window.location.search);
-datasetId = urlParams.get('datasetId');
-
-if (datasetId) {
-  loadDataset(datasetId);
-}
-
 // Handler for tool execution events if pushed from host.
-// Per MCP Apps spec (ext-apps v0.3.0), ontoolresult receives a CallToolResult
+// Per MCP Apps spec (ext-apps v1.7), ontoolresult receives a CallToolResult
 // which has content: ContentBlock[]. We extract the JSON envelope from content[0].text
 // and parse the datasetId from the result.
 app.ontoolresult = (result: any) => {
@@ -42,6 +31,21 @@ app.ontoolresult = (result: any) => {
     // If parsing fails, datasetId from URL will be used
   }
 };
+
+async function initializeApp() {
+  // ext-apps 1.7 requires one-shot handlers to be registered before connect,
+  // and host-bound methods must wait for the ui/initialize handshake.
+  await app.connect();
+
+  const urlParams = new URLSearchParams(window.location.search);
+  datasetId = urlParams.get('datasetId');
+
+  if (datasetId) {
+    await loadDataset(datasetId);
+  }
+}
+
+void initializeApp();
 
 async function loadDataset(id: string) {
   const subtitle = document.getElementById('report-subtitle');

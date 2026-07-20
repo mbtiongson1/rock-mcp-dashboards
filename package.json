@@ -17,7 +17,7 @@
     "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@modelcontextprotocol/ext-apps": "^0.3.0",
+    "@modelcontextprotocol/ext-apps": "^1.7.4",
     "@modelcontextprotocol/sdk": "^1.0.1",
     "@upstash/redis": "^1.31.0",
     "jose": "^6.2.3",
@@ -33,6 +33,7 @@
     "@types/react-dom": "^19.2.3",
     "esbuild": "^0.28.1",
     "eslint": "^10.7.0",
+    "happy-dom": "20.10.6",
     "tsx": "^4.23.1",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.64.0",
