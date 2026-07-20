@@ -354,6 +354,17 @@ async function getPersonGroups(
   personId: number,
   discoveryService: any
 ): Promise<{ connectGroups: any[]; ministryTeams: any[]; other: any[]; warning?: string }> {
+  // Guard: never interpolate an unresolved id into an OData filter. A bad id
+  // would emit `PersonId eq undefined` and cascade several doomed Rock calls.
+  if (typeof personId !== 'number' || Number.isNaN(personId)) {
+    return {
+      connectGroups: [],
+      ministryTeams: [],
+      other: [],
+      warning: 'Skipped groups: person id was not resolved.',
+    };
+  }
+
   try {
     let members: any[] = [];
     let expandedGroups = false; // v2 search embeds the Group object; v1 does not
@@ -1063,21 +1074,29 @@ export const rockPeopleTool: GatewayTool = {
 
         // Compose included summaries if requested
         if (include && include.length > 0) {
+          const personId = match.Id;
+          const hasValidId = typeof personId === 'number' && !Number.isNaN(personId);
           for (const includeType of include) {
+            if (!hasValidId) {
+              // The resolved record carried no numeric Id — skip every include
+              // rather than interpolate `undefined` into Rock filters.
+              (profileResult as any)[includeType] = { warning: 'Skipped: person id was not resolved.' };
+              continue;
+            }
             if (includeType === 'groups') {
-              const groupData = await getPersonGroups(rockClient, ctx, match.Id, discoveryService);
+              const groupData = await getPersonGroups(rockClient, ctx, personId, discoveryService);
               profileResult.groups = groupData;
             } else if (includeType === 'family') {
-              const familyData = await getFamily(rockClient, ctx, match.Id);
+              const familyData = await getFamily(rockClient, ctx, personId);
               profileResult.family = familyData;
             } else if (includeType === 'connectionStatus') {
-              const connData = await getConnectionStatus(rockClient, ctx, match.Id, discoveryService);
+              const connData = await getConnectionStatus(rockClient, ctx, personId, discoveryService);
               profileResult.connectionStatus = connData;
             } else if (includeType === 'attendanceSummary') {
-              const attData = await getAttendanceSummary(rockClient, ctx, match.Id, 12);
+              const attData = await getAttendanceSummary(rockClient, ctx, personId, 12);
               profileResult.attendanceSummary = attData;
             } else if (includeType === 'servingSummary') {
-              const servData = await getServingSummary(rockClient, ctx, match.Id, discoveryService);
+              const servData = await getServingSummary(rockClient, ctx, personId, discoveryService);
               profileResult.servingSummary = servData;
             }
           }

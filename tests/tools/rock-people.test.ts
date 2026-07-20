@@ -47,6 +47,29 @@ describe('rock_people tool', () => {
     } as unknown as OAuthRockContext;
   });
 
+  describe('undefined person id guard (finding #2)', () => {
+    it('profile with a match lacking a numeric Id makes no groups/serving/connection/attendance requests', async () => {
+      // Exact-name lookup returns a record with NO Id (the shape that produced `PersonId eq undefined`).
+      mockClient.post.mockRejectedValue(new Error('v2 down'));
+      mockClient.get.mockResolvedValue([{ Guid: 'g-1', NickName: 'Jamie', LastName: 'Cruz' }]);
+
+      const result = await rockPeopleTool.handle(
+        { action: 'profile', person: { search: 'Jamie Cruz' }, include: ['groups', 'servingSummary', 'connectionStatus', 'attendanceSummary'] },
+        null,
+        mockCtx
+      );
+      const response = JSON.parse(result.content[0].text!);
+      expect(response.ok).toBe(true);
+
+      // No request URL/body may contain the literal "undefined".
+      const allGet = (mockClient.get as any).mock.calls.map((c: any[]) => String(c[1]));
+      const allPost = (mockClient.post as any).mock.calls.map((c: any[]) => JSON.stringify(c[2] ?? c[1]));
+      expect([...allGet, ...allPost].some((s) => s.includes('undefined'))).toBe(false);
+      // The groups include reports a skip warning rather than crashing.
+      expect(response.result.groups?.warning).toMatch(/person id/i);
+    });
+  });
+
   describe('find action v1 fallback', () => {
     it('splits a full-name query into first/last tokens', async () => {
       mockClient.post.mockRejectedValue(new Error('401 Unauthorized'));
