@@ -150,6 +150,7 @@ describe('rock_people tool', () => {
   it('should reveal email if explicitly requested and user has read/write scope', async () => {
     mockCtx.mode = 'readwrite';
     mockCtx.scopes = new Set(['read', 'write']);
+    mockCtx.rockUser = { isRsrAdmin: true, isStaff: true, ledGroupIds: [] };
 
     mockClient.post.mockResolvedValue([
       {
@@ -171,6 +172,34 @@ describe('rock_people tool', () => {
     const response = JSON.parse(result.content[0].text!);
     expect(response.ok).toBe(true);
     expect(response.result.person.email).toBe('alex@example.com');
+  });
+
+  it('omits sensitive fields with a warning for non-staff readwrite callers', async () => {
+    mockCtx.mode = 'readwrite';
+    mockCtx.scopes = new Set(['read', 'write']);
+    mockCtx.rockUser = { isRsrAdmin: false, isStaff: false, ledGroupIds: [42] };
+
+    mockClient.post.mockResolvedValue([
+      {
+        Id: 123,
+        Guid: 'g-123',
+        FirstName: 'Alex',
+        LastName: 'Santos',
+        Email: 'alex@example.com',
+        PrimaryAliasId: 1234,
+      },
+    ]);
+
+    const result = await rockPeopleTool.handle(
+      { action: 'profile', person: { search: 'Alex Santos' }, includeSensitive: true },
+      null,
+      mockCtx
+    );
+
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.result.person.email).toBeUndefined();
+    expect(response.result.person.phone).toBeUndefined();
+    expect(response.warning).toMatch(/staff\/admin/i);
   });
 
   it('should classify groups into connect groups and ministry teams', async () => {

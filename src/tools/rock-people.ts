@@ -54,7 +54,7 @@ const readOnlyPeopleActions = [
     action: z.literal('profile'),
     person: personRefSchema,
     include: z.array(z.enum(['groups', 'family', 'connectionStatus', 'attendanceSummary', 'servingSummary'])).optional(),
-    includeSensitive: z.boolean().default(false),
+    includeSensitive: z.boolean().default(false).describe('Include email, phone, birthdate. Requires readwrite mode + staff/admin; otherwise omitted with a warning.'),
   }),
   z.object({
     action: z.literal('groups'),
@@ -1048,7 +1048,14 @@ export const rockPeopleTool: GatewayTool = {
           });
         }
 
-        const isAuthorizedForSensitive = includeSensitive && ctx.mode === 'readwrite' && ctx.scopes.has('write');
+        const isStaffOrAdmin = !!(ctx.rockUser && (ctx.rockUser.isRsrAdmin || ctx.rockUser.isStaff));
+        const isAuthorizedForSensitive =
+          includeSensitive && ctx.mode === 'readwrite' && ctx.scopes.has('write') && isStaffOrAdmin;
+        let sensitiveWarning: string | undefined;
+        if (includeSensitive && !isAuthorizedForSensitive) {
+          sensitiveWarning =
+            'Sensitive fields (email/phone/birthdate) omitted: includeSensitive requires readwrite mode and staff/admin access.';
+        }
 
         const profileResult: any = {
           person: {
@@ -1104,7 +1111,7 @@ export const rockPeopleTool: GatewayTool = {
           }
         }
 
-        return formatResponse(parsed.action, ctx, profileResult);
+        return formatResponse(parsed.action, ctx, profileResult, undefined, sensitiveWarning);
       } catch (err: any) {
         return formatResponse(parsed.action, ctx, null, {
           code: 'PROFILE_ERROR',
