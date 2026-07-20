@@ -1,7 +1,29 @@
 import { describe, it, expect } from 'vitest';
-import { quoteLinqString, quoteODataString, assertValidGuid, linqToOData } from '../../src/rock/query.js';
+import { quoteLinqString, quoteODataString, assertValidGuid, linqToOData, odataPagination } from '../../src/rock/query.js';
 
 describe('query sanitization', () => {
+  describe('odataPagination', () => {
+    it('emits $orderby before $skip whenever skip > 0', () => {
+      const frag = odataPagination({ top: 50, skip: 10 });
+      expect(frag).toBe('$orderby=Id&$top=50&$skip=10');
+      // The invariant that matters: $orderby appears and precedes $skip.
+      expect(frag.indexOf('$orderby')).toBeLessThan(frag.indexOf('$skip'));
+    });
+
+    it('omits $skip (and $orderby) when skip is 0', () => {
+      expect(odataPagination({ top: 25, skip: 0 })).toBe('$top=25');
+    });
+
+    it('returns empty string when nothing to paginate', () => {
+      expect(odataPagination({})).toBe('');
+    });
+
+    it('honors an explicit orderBy field', () => {
+      expect(odataPagination({ top: 10, skip: 5, orderBy: 'CreatedDateTime' }))
+        .toBe('$orderby=CreatedDateTime&$top=10&$skip=5');
+    });
+  });
+
   describe('quoteLinqString', () => {
     it('should quote plain strings', () => {
       expect(quoteLinqString('John')).toBe('"John"');

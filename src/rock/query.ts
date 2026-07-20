@@ -44,6 +44,36 @@ export function quoteODataString(value: string): string {
 }
 
 /**
+ * Build the OData pagination fragment for a v1 REST query, guaranteeing that
+ * `$orderby` is present whenever `$skip` is. Rock's v1 API (EF / LINQ-to-Entities)
+ * throws "The method 'Skip' is only supported for sorted input in LINQ to
+ * Entities. The method 'OrderBy' must be called before the method 'Skip'." when
+ * a query is skipped without a preceding sort. Any paginated v1 query MUST route
+ * through this so an ordering is always applied.
+ *
+ * @param opts.top     `$top` page size (omitted when falsy).
+ * @param opts.skip    `$skip` offset (omitted when 0; forces `$orderby` when > 0).
+ * @param opts.orderBy Sort field. Defaults to `Id` — always present and stable.
+ * @returns A `&`-joined fragment with NO leading separator, or `''` if nothing
+ *          needs paginating. Callers append it to their existing query string.
+ */
+export function odataPagination(opts: { top?: number; skip?: number; orderBy?: string }): string {
+  const { top, skip = 0, orderBy = 'Id' } = opts;
+  const parts: string[] = [];
+  // $orderby MUST accompany $skip; also emit it when a caller explicitly asks.
+  if (skip > 0 || opts.orderBy) {
+    parts.push(`$orderby=${orderBy}`);
+  }
+  if (top) {
+    parts.push(`$top=${top}`);
+  }
+  if (skip > 0) {
+    parts.push(`$skip=${skip}`);
+  }
+  return parts.join('&');
+}
+
+/**
  * Decode the small set of HTML entities that MCP clients sometimes send inside a
  * `where` clause (e.g. a client that HTML-escapes double quotes to `&quot;`).
  * Left un-decoded they leak into the OData `$filter` and Rock 400s with
