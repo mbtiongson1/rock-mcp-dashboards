@@ -9,7 +9,7 @@ import { validateOAuthContext, jsonCors, withCors } from './oauth-validate.js';
 import { resolveServerOverride } from './server-override.js';
 import type { OAuthRockContext } from './oauth.js';
 import { RockApiError } from '../rock/client.js';
-import { AuditLogger } from '../auth/audit.js';
+import { AuditLogger, hashOAuthSubject } from '../auth/audit.js';
 import { createRedisClient, getRedisPrefix } from '../rock/redis.js';
 import {
   RateLimiter,
@@ -111,7 +111,7 @@ export async function handleMcpPost(
       if (resolvedUser.tokenRejectedByRock) {
         console.error(
           '[mcp route] Rock rejected the forwarded token (401) during resolution — not an unlinked-person case',
-          { subject: ctx.oauth.subject }
+          { subjectHash: hashOAuthSubject(ctx.oauth.subject) }
         );
         throw new PersonResolutionError(
           `Rock rejected your access token (401). This is usually a transient or expired-token issue — retry, and re-authenticate if it persists.`,
@@ -180,8 +180,10 @@ export async function handleMcpPost(
         action: 'resolveUser',
         outcome: 'denied',
         errorCode: rockTokenRejected ? 'ROCK_TOKEN_REJECTED' : 'PERSON_NOT_RESOLVED',
+        // The event already carries oauthSubjectHash for correlation; don't put
+        // the raw OAuth subject in reason (clear-text logging of a user identifier).
         reason: rockTokenRejected
-          ? `Rock rejected forwarded token (401) for subject: ${ctx.oauth.subject}`
+          ? 'Rock rejected forwarded token (401) during person resolution'
           : `Person not resolved for email: ${err.email || 'unknown'}`,
       });
       return jsonCors({ error: message }, { status: 403 }, requestOrigin);

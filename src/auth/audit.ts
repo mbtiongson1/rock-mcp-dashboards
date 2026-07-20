@@ -1,6 +1,16 @@
 import * as crypto from 'crypto';
 import { OAuthRockContext } from '../http/oauth.js';
 
+/**
+ * Hash an OAuth subject for logging/correlation. The raw subject is a sensitive
+ * user identifier and must never be logged in clear text (see the audit event's
+ * `oauthSubjectHash`); a stable sha256 lets bursts be correlated by user without
+ * emitting the identifier itself.
+ */
+export function hashOAuthSubject(subject: string | undefined): string {
+  return crypto.createHash('sha256').update(subject || '').digest('hex');
+}
+
 export interface AuditEvent {
   timestamp: string;
   requestId: string;
@@ -42,10 +52,7 @@ export class AuditLogger {
       errorCode?: string;
     }
   ): void {
-    const oauthSubjectHash = crypto
-      .createHash('sha256')
-      .update(ctx.oauth.subject || '')
-      .digest('hex');
+    const oauthSubjectHash = hashOAuthSubject(ctx.oauth.subject);
 
     const scopeUsed: 'read' | 'write' = params.tool === 'rock_write' || params.action.startsWith('update') || params.action.startsWith('create') || params.action.startsWith('add') || params.action.startsWith('patch')
       ? 'write'
