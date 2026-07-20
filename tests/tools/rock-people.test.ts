@@ -150,6 +150,7 @@ describe('rock_people tool', () => {
   it('should reveal email if explicitly requested and user has read/write scope', async () => {
     mockCtx.mode = 'readwrite';
     mockCtx.scopes = new Set(['read', 'write']);
+    mockCtx.rockUser = { isRsrAdmin: true, isStaff: true, ledGroupIds: [] };
 
     mockClient.post.mockResolvedValue([
       {
@@ -171,6 +172,94 @@ describe('rock_people tool', () => {
     const response = JSON.parse(result.content[0].text!);
     expect(response.ok).toBe(true);
     expect(response.result.person.email).toBe('alex@example.com');
+  });
+
+  it('returns phone from the PhoneNumbers entity when includeSensitive is authorized', async () => {
+    mockCtx.mode = 'readwrite';
+    mockCtx.scopes = new Set(['read', 'write']);
+    mockCtx.rockUser = { isRsrAdmin: true, isStaff: true, ledGroupIds: [] };
+
+    mockClient.get.mockImplementation((_ctx: any, url: string) => {
+      if (url === '/api/v2/models/people/123') {
+        return Promise.resolve({ Id: 123, Guid: 'g', FirstName: 'Kate', LastName: 'Diana', Email: 'k@x.ph' });
+      }
+      if (url === '/api/PhoneNumbers?$filter=PersonId eq 123') {
+        return Promise.resolve([
+          { Id: 9, PersonId: 123, Number: '09171234567', NumberFormatted: '0917 123 4567', NumberTypeValueId: 12 },
+        ]);
+      }
+      if (url.includes('/api/DefinedTypes?')) return Promise.resolve([{ Id: 13 }]);
+      if (url.includes('/api/DefinedValues?$filter=DefinedTypeId eq 13')) {
+        return Promise.resolve([{ Id: 12, Value: 'Mobile' }]);
+      }
+      return Promise.resolve([]);
+    });
+
+    const result = await rockPeopleTool.handle(
+      { action: 'profile', person: { id: 123 }, includeSensitive: true },
+      null,
+      mockCtx
+    );
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.result.person.phone).toBe('0917 123 4567');
+    expect(response.result.person.phones).toEqual([
+      { number: '09171234567', formatted: '0917 123 4567', typeValueId: 12, isUnlisted: undefined },
+    ]);
+  });
+
+  it('keeps profile email and warns when the PhoneNumbers entity fetch fails', async () => {
+    mockCtx.mode = 'readwrite';
+    mockCtx.scopes = new Set(['read', 'write']);
+    mockCtx.rockUser = { isRsrAdmin: true, isStaff: true, ledGroupIds: [] };
+
+    mockClient.get.mockImplementation((_ctx: any, url: string) => {
+      if (url === '/api/v2/models/people/123') {
+        return Promise.resolve({ Id: 123, Guid: 'g', FirstName: 'Kate', LastName: 'Diana', Email: 'k@x.ph' });
+      }
+      if (url === '/api/PhoneNumbers?$filter=PersonId eq 123') {
+        return Promise.reject(new Error('PhoneNumbers unavailable'));
+      }
+      return Promise.resolve([]);
+    });
+
+    const result = await rockPeopleTool.handle(
+      { action: 'profile', person: { id: 123 }, includeSensitive: true },
+      null,
+      mockCtx
+    );
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.ok).toBe(true);
+    expect(response.result.person.email).toBe('k@x.ph');
+    expect(response.result.person.phone).toBeUndefined();
+    expect(response.warning).toMatch(/phone lookup failed: PhoneNumbers unavailable/i);
+  });
+
+  it('omits sensitive fields with a warning for non-staff readwrite callers', async () => {
+    mockCtx.mode = 'readwrite';
+    mockCtx.scopes = new Set(['read', 'write']);
+    mockCtx.rockUser = { isRsrAdmin: false, isStaff: false, ledGroupIds: [42] };
+
+    mockClient.post.mockResolvedValue([
+      {
+        Id: 123,
+        Guid: 'g-123',
+        FirstName: 'Alex',
+        LastName: 'Santos',
+        Email: 'alex@example.com',
+        PrimaryAliasId: 1234,
+      },
+    ]);
+
+    const result = await rockPeopleTool.handle(
+      { action: 'profile', person: { search: 'Alex Santos' }, includeSensitive: true },
+      null,
+      mockCtx
+    );
+
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.result.person.email).toBeUndefined();
+    expect(response.result.person.phone).toBeUndefined();
+    expect(response.warning).toMatch(/staff\/admin/i);
   });
 
   it('should classify groups into connect groups and ministry teams', async () => {
@@ -912,6 +1001,71 @@ describe('rock_people tool', () => {
       // Where clause filters on the resolved campus id
       const searchCall = mockClient.post.mock.calls.find((c: any[]) => !c[2]?.IsCountOnly);
       expect(searchCall[2].Where).toContain('PrimaryCampusId == 1');
+    });
+
+    it('filter with includeSensitive returns email and phone per row for staff', async () => {
+      mockCtx.mode = 'readwrite';
+      mockCtx.scopes = new Set(['read', 'write']);
+      mockCtx.rockUser = { isRsrAdmin: true, isStaff: true, ledGroupIds: [] };
+      mockFilterPost(2, [
+        { Id: 1, FirstName: 'A', LastName: 'One', Email: 'a@x.ph', PrimaryCampusId: 2, ConnectionStatusValueId: 5 },
+        { Id: 2, FirstName: 'B', LastName: 'Two', Email: 'b@x.ph', PrimaryCampusId: 2, ConnectionStatusValueId: 5 },
+      ]);
+      mockClient.get.mockImplementation((_ctx: any, url: string) => {
+        if (url.includes("Name eq 'Connection Status'")) return Promise.resolve([{ Id: 4 }]);
+        if (url.includes('DefinedTypeId eq 4')) return Promise.resolve([{ Id: 5, Value: 'Member' }]);
+        if (url.includes('/api/PhoneNumbers?')) {
+          return Promise.resolve([
+            { PersonId: 1, Number: '0917', NumberFormatted: '0917', NumberTypeValueId: 12 },
+          ]);
+        }
+        if (url.includes("Name eq 'Phone Type'")) return Promise.resolve([{ Id: 13 }]);
+        if (url.includes('DefinedTypeId eq 13')) return Promise.resolve([{ Id: 12, Value: 'Mobile' }]);
+        return Promise.resolve([]);
+      });
+
+      const result = await rockPeopleTool.handle(
+        { action: 'filter', campusId: 2, includeSensitive: true },
+        null,
+        mockCtx
+      );
+      const response = JSON.parse(result.content[0].text!);
+
+      expect(response.result.results[0].email).toBe('a@x.ph');
+      expect(response.result.results[0].phone).toBe('0917');
+      expect(response.result.results[1].email).toBe('b@x.ph');
+      expect(response.result.results[1].phone).toBeUndefined();
+      expect(mockClient.get).toHaveBeenCalledWith(
+        mockCtx,
+        `/api/PhoneNumbers?$filter=${encodeURIComponent('PersonId eq 1 or PersonId eq 2')}`
+      );
+    });
+
+    it('filter with includeSensitive is omitted with a warning for non-staff', async () => {
+      mockCtx.mode = 'readwrite';
+      mockCtx.scopes = new Set(['read', 'write']);
+      mockCtx.rockUser = { isRsrAdmin: false, isStaff: false, ledGroupIds: [42] };
+      mockFilterPost(2, [
+        { Id: 1, FirstName: 'A', LastName: 'One', Email: 'a@x.ph', PrimaryCampusId: 2, ConnectionStatusValueId: 5 },
+        { Id: 2, FirstName: 'B', LastName: 'Two', Email: 'b@x.ph', PrimaryCampusId: 2, ConnectionStatusValueId: 5 },
+      ]);
+      mockClient.get
+        .mockResolvedValueOnce([{ Id: 4 }])
+        .mockResolvedValueOnce([{ Id: 5, Value: 'Member' }]);
+
+      const result = await rockPeopleTool.handle(
+        { action: 'filter', campusId: 2, includeSensitive: true },
+        null,
+        mockCtx
+      );
+      const response = JSON.parse(result.content[0].text!);
+
+      expect(response.result.results[0].email).toBeUndefined();
+      expect(response.result.results[0].phone).toBeUndefined();
+      expect(response.result.results[1].email).toBeUndefined();
+      expect(response.result.results[1].phone).toBeUndefined();
+      expect(response.warning).toMatch(/staff\/admin/i);
+      expect(mockClient.get.mock.calls.some((c: any[]) => String(c[1]).includes('/api/PhoneNumbers'))).toBe(false);
     });
 
     it('supports countOnly without fetching rows', async () => {

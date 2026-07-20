@@ -54,7 +54,7 @@ const readOnlyPeopleActions = [
     action: z.literal('profile'),
     person: personRefSchema,
     include: z.array(z.enum(['groups', 'family', 'connectionStatus', 'attendanceSummary', 'servingSummary'])).optional(),
-    includeSensitive: z.boolean().default(false),
+    includeSensitive: z.boolean().default(false).describe('Include email, phone, birthdate. Requires readwrite mode + staff/admin; otherwise omitted with a warning.'),
   }),
   z.object({
     action: z.literal('groups'),
@@ -93,6 +93,8 @@ const readOnlyPeopleActions = [
       .describe('Page size (max 500). The response always includes the true total.'),
     offset: z.coerce.number().int().nonnegative().default(0)
       .describe('Pagination offset; combine with limit to page through all matches.'),
+    includeSensitive: z.coerce.boolean().default(false)
+      .describe('Include email and phone per row. Requires readwrite mode + staff/admin; otherwise omitted with a warning.'),
   }),
 ] as const;
 
@@ -311,6 +313,46 @@ async function upsertMobilePhoneNumber(
       return created;
     }
   }
+}
+
+/**
+ * Fetch a person's PhoneNumbers (v1). Phone values are NEVER serialized on the
+ * Person record itself — MobilePhoneNumber/Phone are computed C# properties —
+ * so this separate query is the only read path.
+ */
+async function getPersonPhones(
+  client: RockClient,
+  ctx: OAuthRockContext,
+  personId: number
+): Promise<Array<{ number: string; formatted?: string; typeValueId?: number; isUnlisted?: boolean }>> {
+  const rows = await client.get<any[]>(ctx, `/api/PhoneNumbers?$filter=PersonId eq ${personId}`);
+  return (rows || []).map((p: any) => ({
+    number: p.Number,
+    formatted: p.NumberFormatted,
+    typeValueId: p.NumberTypeValueId,
+    isUnlisted: p.IsUnlisted,
+  }));
+}
+
+/** Batch-fetch PhoneNumbers for many people. Chunked OR-filters keep URLs short. */
+async function getPhonesByPersonIds(
+  client: RockClient,
+  ctx: OAuthRockContext,
+  personIds: number[]
+): Promise<Map<number, Array<{ number: string; formatted?: string; typeValueId?: number; isUnlisted?: boolean }>>> {
+  const byPerson = new Map<number, Array<{ number: string; formatted?: string; typeValueId?: number; isUnlisted?: boolean }>>();
+  const CHUNK = 20;
+  for (let i = 0; i < personIds.length; i += CHUNK) {
+    const chunk = personIds.slice(i, i + CHUNK);
+    const filter = chunk.map((id) => `PersonId eq ${id}`).join(' or ');
+    const rows = await client.get<any[]>(ctx, `/api/PhoneNumbers?$filter=${encodeURIComponent(filter)}`);
+    for (const p of rows || []) {
+      const list = byPerson.get(p.PersonId) ?? [];
+      list.push({ number: p.Number, formatted: p.NumberFormatted, typeValueId: p.NumberTypeValueId, isUnlisted: p.IsUnlisted });
+      byPerson.set(p.PersonId, list);
+    }
+  }
+  return byPerson;
 }
 
 /**
@@ -830,7 +872,7 @@ export const rockPeopleTool: GatewayTool = {
     }
 
     if (parsed.action === 'filter') {
-      const { campusId, campusName, connectionStatus, isActive, countOnly, limit, offset } = parsed;
+      const { campusId, campusName, connectionStatus, isActive, countOnly, limit, offset, includeSensitive } = parsed;
       const discoveryService = getDiscoveryService(ctx);
 
       if (!campusId && !campusName && !connectionStatus && isActive === undefined) {
@@ -993,6 +1035,32 @@ export const rockPeopleTool: GatewayTool = {
           connectionStatus: p.ConnectionStatusValue || (p.ConnectionStatusValueId ? connectionStatusMap.get(p.ConnectionStatusValueId) : undefined),
         }));
 
+        if (includeSensitive) {
+          const isStaffOrAdmin = !!(ctx.rockUser && (ctx.rockUser.isRsrAdmin || ctx.rockUser.isStaff));
+          const authorized = ctx.mode === 'readwrite' && ctx.scopes.has('write') && isStaffOrAdmin;
+          if (!authorized) {
+            const note = 'Sensitive fields (email/phone) omitted: includeSensitive requires readwrite mode and staff/admin access.';
+            warning = warning ? `${warning}; ${note}` : note;
+          } else {
+            try {
+              const ids = results.map((r: any) => r.id).filter((id: any) => typeof id === 'number' && !Number.isNaN(id));
+              const phonesByPerson = await getPhonesByPersonIds(rockClient, ctx, ids);
+              const mobileTypeId = await resolveMobilePhoneTypeId(rockClient, ctx).catch(() => null);
+              const rawById = new Map((rows || []).map((p: any) => [p.Id, p]));
+              for (const r of results as any[]) {
+                r.email = rawById.get(r.id)?.Email;
+                const phones = phonesByPerson.get(r.id) ?? [];
+                const preferred = (mobileTypeId && phones.find((p) => p.typeValueId === mobileTypeId)) || phones[0];
+                r.phone = preferred?.formatted ?? preferred?.number;
+                if (phones.length > 0) r.phones = phones;
+              }
+            } catch (err: any) {
+              const note = `Sensitive fields partially omitted: ${err.message}`;
+              warning = warning ? `${warning}; ${note}` : note;
+            }
+          }
+        }
+
         return formatResponse(parsed.action, ctx, {
           total,
           offset,
@@ -1048,7 +1116,14 @@ export const rockPeopleTool: GatewayTool = {
           });
         }
 
-        const isAuthorizedForSensitive = includeSensitive && ctx.mode === 'readwrite' && ctx.scopes.has('write');
+        const isStaffOrAdmin = !!(ctx.rockUser && (ctx.rockUser.isRsrAdmin || ctx.rockUser.isStaff));
+        const isAuthorizedForSensitive =
+          includeSensitive && ctx.mode === 'readwrite' && ctx.scopes.has('write') && isStaffOrAdmin;
+        let sensitiveWarning: string | undefined;
+        if (includeSensitive && !isAuthorizedForSensitive) {
+          sensitiveWarning =
+            'Sensitive fields (email/phone/birthdate) omitted: includeSensitive requires readwrite mode and staff/admin access.';
+        }
 
         const profileResult: any = {
           person: {
@@ -1070,8 +1145,20 @@ export const rockPeopleTool: GatewayTool = {
 
         if (isAuthorizedForSensitive) {
           profileResult.person.email = match.Email;
-          profileResult.person.phone = match.MobilePhoneNumber || match.Phone;
           profileResult.person.birthdate = match.BirthDate || (match.BirthYear ? `${match.BirthYear}-${match.BirthMonth}-${match.BirthDay}` : undefined);
+          if (typeof match.Id === 'number' && !Number.isNaN(match.Id)) {
+            try {
+              const phones = await getPersonPhones(rockClient, ctx, match.Id);
+              const mobileTypeId = await resolveMobilePhoneTypeId(rockClient, ctx).catch(() => null);
+              const preferred = (mobileTypeId && phones.find((p) => p.typeValueId === mobileTypeId)) || phones[0];
+              profileResult.person.phone = preferred?.formatted ?? preferred?.number;
+              profileResult.person.phones = phones;
+            } catch (phoneErr: any) {
+              sensitiveWarning = sensitiveWarning
+                ? `${sensitiveWarning}; phone lookup failed: ${phoneErr.message}`
+                : `Phone lookup failed: ${phoneErr.message}`;
+            }
+          }
         }
 
         // Compose included summaries if requested
@@ -1104,7 +1191,7 @@ export const rockPeopleTool: GatewayTool = {
           }
         }
 
-        return formatResponse(parsed.action, ctx, profileResult);
+        return formatResponse(parsed.action, ctx, profileResult, undefined, sensitiveWarning);
       } catch (err: any) {
         return formatResponse(parsed.action, ctx, null, {
           code: 'PROFILE_ERROR',
