@@ -281,6 +281,94 @@ describe('rock_entity tool', () => {
     expect(response.ok).toBe(true);
   });
 
+  it('allows raw search on phonenumbers for staff/admin', async () => {
+    const staffCtx = {
+      mode: 'readonly',
+      rockClient: mockClient,
+      rockUser: { isRsrAdmin: false, isStaff: true, ledGroupIds: [] },
+    } as unknown as OAuthRockContext;
+    mockClient.post.mockResolvedValue([{ Id: 1, PersonId: 123, Number: '0917' }]);
+
+    const result = await rockEntityTool.handle(
+      { action: 'search', model: 'phonenumbers', where: 'PersonId == 123' },
+      null,
+      staffCtx
+    );
+
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.error?.code).not.toBe('MODEL_NOT_ALLOWED');
+    expect(mockClient.post).toHaveBeenCalledWith(
+      staffCtx,
+      '/api/v2/models/phonenumbers/search',
+      expect.objectContaining({ Where: 'PersonId == 123' })
+    );
+    expect(response.ok).toBe(true);
+    expect(response.result[0].Number).toBe('0917');
+  });
+
+  it('still rejects raw search on phonenumbers for leader-only callers', async () => {
+    const leaderCtx = {
+      mode: 'readonly',
+      rockClient: mockClient,
+      rockUser: { isRsrAdmin: false, isStaff: false, ledGroupIds: [5] },
+    } as unknown as OAuthRockContext;
+
+    const result = await rockEntityTool.handle(
+      { action: 'search', model: 'phonenumbers', where: 'PersonId == 123' },
+      null,
+      leaderCtx
+    );
+
+    expect(mockClient.post).not.toHaveBeenCalled();
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.ok).toBe(false);
+    expect(response.error?.code).toBe('FORBIDDEN_MODEL');
+  });
+
+  it('still rejects raw search on other non-allowlisted models for staff', async () => {
+    const staffCtx = {
+      mode: 'readonly',
+      rockClient: mockClient,
+      rockUser: { isRsrAdmin: false, isStaff: true, ledGroupIds: [] },
+    } as unknown as OAuthRockContext;
+
+    const result = await rockEntityTool.handle(
+      { action: 'search', model: 'userlogins', where: 'Id == 1' },
+      null,
+      staffCtx
+    );
+
+    expect(mockClient.post).not.toHaveBeenCalled();
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.ok).toBe(false);
+    expect(response.error?.code).toBe('MODEL_NOT_ALLOWED');
+  });
+
+  it('allows count with where on phonenumbers for staff/admin', async () => {
+    const staffCtx = {
+      mode: 'readonly',
+      rockClient: mockClient,
+      rockUser: { isRsrAdmin: false, isStaff: true, ledGroupIds: [] },
+    } as unknown as OAuthRockContext;
+    mockClient.post.mockResolvedValue(1);
+
+    const result = await rockEntityTool.handle(
+      { action: 'count', model: 'phonenumbers', where: 'PersonId == 123' },
+      null,
+      staffCtx
+    );
+
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.error?.code).not.toBe('MODEL_NOT_ALLOWED');
+    expect(mockClient.post).toHaveBeenCalledWith(
+      staffCtx,
+      '/api/v2/models/phonenumbers/search',
+      expect.objectContaining({ Where: 'PersonId == 123', IsCountOnly: true })
+    );
+    expect(response.ok).toBe(true);
+    expect(response.result.count).toBe(1);
+  });
+
   it('should reject count with where on non-allowlisted model', async () => {
     const result = await rockEntityTool.handle(
       {

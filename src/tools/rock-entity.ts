@@ -77,7 +77,8 @@ function wrongFieldReason(err: unknown): string | null {
 const ENTITY_SEARCH_V2_ENDPOINT = '/api/v2/models/entitysearches/search';
 
 /**
- * Allowlisted models for raw search/count-by-where operations (enforced for everyone).
+ * Allowlisted models for raw search/count-by-where operations (enforced for everyone),
+ * with additional staff/admin-only models in STAFF_ADMIN_READ_MODELS below.
  * For restricted (leader-only) callers, this allowlist is additionally enforced on
  * get/searchByKey/attributeValues (see the restricted-read guard at the top of `handle`).
  * Staff/admin callers are not subject to that additional enforcement.
@@ -103,6 +104,12 @@ const READ_MODEL_ALLOWLIST = new Set([
   'notes',
   'persons',
 ]);
+
+/**
+ * Models raw-searchable ONLY by staff/admin. Bulk PII (phone numbers) stays hidden
+ * from leader-only callers, who already fail the restricted-tier allowlist check.
+ */
+const STAFF_ADMIN_READ_MODELS = new Set(['phonenumbers']);
 
 /**
  * Financial / giving models a restricted (leader-only) caller may never read. The
@@ -186,6 +193,7 @@ const SINGULAR_TO_PLURAL: Record<string, string> = {
   location: 'locations',
   note: 'notes',
   report: 'reports',
+  phonenumber: 'phonenumbers',
 };
 
 /**
@@ -206,6 +214,7 @@ function getRestV1Path(model: string): string {
   if (lower === 'campuses' || lower === 'campus') return 'Campuses';
   if (lower === 'userlogins' || lower === 'userlogin') return 'UserLogins';
   if (lower === 'groupmembers' || lower === 'groupmember') return 'GroupMembers';
+  if (lower === 'phonenumbers' || lower === 'phonenumber') return 'PhoneNumbers';
   return model.charAt(0).toUpperCase() + model.slice(1);
 }
 
@@ -332,7 +341,10 @@ export const rockEntityTool: GatewayTool = {
       const normalizedModel = normalizeModelName(model);
 
       // Enforce model allowlist for raw search
-      if (!READ_MODEL_ALLOWLIST.has(normalizedModel)) {
+      const modelAllowed =
+        READ_MODEL_ALLOWLIST.has(normalizedModel) ||
+        (isStaffOrAdmin && STAFF_ADMIN_READ_MODELS.has(normalizedModel));
+      if (!modelAllowed) {
         return formatResponse(parsed.action, ctx, null, {
           code: 'MODEL_NOT_ALLOWED',
           message: `Raw search is not allowed on model ${model}. Use searchByKey (saved Entity Search) instead.`,
@@ -474,7 +486,10 @@ export const rockEntityTool: GatewayTool = {
       const normalizedModel = normalizeModelName(model);
 
       // Enforce model allowlist for raw count-by-where
-      if (!READ_MODEL_ALLOWLIST.has(normalizedModel)) {
+      const modelAllowed =
+        READ_MODEL_ALLOWLIST.has(normalizedModel) ||
+        (isStaffOrAdmin && STAFF_ADMIN_READ_MODELS.has(normalizedModel));
+      if (!modelAllowed) {
         return formatResponse(parsed.action, ctx, null, {
           code: 'MODEL_NOT_ALLOWED',
           message: `Raw count is not allowed on model ${model}. Use searchByKey (saved Entity Search) instead.`,
