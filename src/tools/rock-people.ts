@@ -93,6 +93,8 @@ const readOnlyPeopleActions = [
       .describe('Page size (max 500). The response always includes the true total.'),
     offset: z.coerce.number().int().nonnegative().default(0)
       .describe('Pagination offset; combine with limit to page through all matches.'),
+    includeSensitive: z.coerce.boolean().default(false)
+      .describe('Include email and phone per row. Requires readwrite mode + staff/admin; otherwise omitted with a warning.'),
   }),
 ] as const;
 
@@ -330,6 +332,27 @@ async function getPersonPhones(
     typeValueId: p.NumberTypeValueId,
     isUnlisted: p.IsUnlisted,
   }));
+}
+
+/** Batch-fetch PhoneNumbers for many people. Chunked OR-filters keep URLs short. */
+async function getPhonesByPersonIds(
+  client: RockClient,
+  ctx: OAuthRockContext,
+  personIds: number[]
+): Promise<Map<number, Array<{ number: string; formatted?: string; typeValueId?: number; isUnlisted?: boolean }>>> {
+  const byPerson = new Map<number, Array<{ number: string; formatted?: string; typeValueId?: number; isUnlisted?: boolean }>>();
+  const CHUNK = 20;
+  for (let i = 0; i < personIds.length; i += CHUNK) {
+    const chunk = personIds.slice(i, i + CHUNK);
+    const filter = chunk.map((id) => `PersonId eq ${id}`).join(' or ');
+    const rows = await client.get<any[]>(ctx, `/api/PhoneNumbers?$filter=${encodeURIComponent(filter)}`);
+    for (const p of rows || []) {
+      const list = byPerson.get(p.PersonId) ?? [];
+      list.push({ number: p.Number, formatted: p.NumberFormatted, typeValueId: p.NumberTypeValueId, isUnlisted: p.IsUnlisted });
+      byPerson.set(p.PersonId, list);
+    }
+  }
+  return byPerson;
 }
 
 /**
@@ -849,7 +872,7 @@ export const rockPeopleTool: GatewayTool = {
     }
 
     if (parsed.action === 'filter') {
-      const { campusId, campusName, connectionStatus, isActive, countOnly, limit, offset } = parsed;
+      const { campusId, campusName, connectionStatus, isActive, countOnly, limit, offset, includeSensitive } = parsed;
       const discoveryService = getDiscoveryService(ctx);
 
       if (!campusId && !campusName && !connectionStatus && isActive === undefined) {
@@ -1011,6 +1034,32 @@ export const rockPeopleTool: GatewayTool = {
           campusId: p.PrimaryCampusId || p.CampusId,
           connectionStatus: p.ConnectionStatusValue || (p.ConnectionStatusValueId ? connectionStatusMap.get(p.ConnectionStatusValueId) : undefined),
         }));
+
+        if (includeSensitive) {
+          const isStaffOrAdmin = !!(ctx.rockUser && (ctx.rockUser.isRsrAdmin || ctx.rockUser.isStaff));
+          const authorized = ctx.mode === 'readwrite' && ctx.scopes.has('write') && isStaffOrAdmin;
+          if (!authorized) {
+            const note = 'Sensitive fields (email/phone) omitted: includeSensitive requires readwrite mode and staff/admin access.';
+            warning = warning ? `${warning}; ${note}` : note;
+          } else {
+            try {
+              const ids = results.map((r: any) => r.id).filter((id: any) => typeof id === 'number' && !Number.isNaN(id));
+              const phonesByPerson = await getPhonesByPersonIds(rockClient, ctx, ids);
+              const mobileTypeId = await resolveMobilePhoneTypeId(rockClient, ctx).catch(() => null);
+              const rawById = new Map((rows || []).map((p: any) => [p.Id, p]));
+              for (const r of results as any[]) {
+                r.email = rawById.get(r.id)?.Email;
+                const phones = phonesByPerson.get(r.id) ?? [];
+                const preferred = (mobileTypeId && phones.find((p) => p.typeValueId === mobileTypeId)) || phones[0];
+                r.phone = preferred?.formatted ?? preferred?.number;
+                if (phones.length > 0) r.phones = phones;
+              }
+            } catch (err: any) {
+              const note = `Sensitive fields partially omitted: ${err.message}`;
+              warning = warning ? `${warning}; ${note}` : note;
+            }
+          }
+        }
 
         return formatResponse(parsed.action, ctx, {
           total,
