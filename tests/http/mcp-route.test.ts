@@ -368,6 +368,47 @@ describe('handleMcpPost', () => {
       logSpy.mockRestore();
     });
 
+    it('distinguishes a Rock-rejected token (401) from an unlinked person (finding #1)', async () => {
+      // Resolver flags tokenRejectedByRock but still resolves no person (fail-closed).
+      const rejectedTokenResolver = {
+        resolve: async () => ({
+          isRsrAdmin: false,
+          isStaff: false,
+          ledGroupIds: [],
+          tokenRejectedByRock: true,
+        }),
+      } as unknown as RockUserResolver;
+
+      const options = appOptions(verifierWithScopes(['read']));
+      options.rockUserResolver = rejectedTokenResolver;
+
+      const logSpy = vi.spyOn(AuditLogger.prototype, 'log');
+
+      const request = mcpRequest(
+        { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} },
+        { Authorization: 'Bearer valid-token' }
+      );
+      const response = await handleMcpPost(request, 'mcp', options);
+
+      // Status is unchanged (still 403 — no client-behavior change), but the
+      // message and audit code disambiguate the burst from a genuine unlinked user.
+      expect(response.status).toBe(403);
+      const json = JSON.parse(await readBody(response));
+      expect(json.error).toMatch(/Rock rejected your access token/i);
+      expect(json.error).not.toMatch(/not linked to a Rock person record/);
+
+      expect(logSpy).toHaveBeenCalled();
+      const logCall = logSpy.mock.calls[0];
+      expect(logCall[1]).toMatchObject({
+        tool: 'mcp',
+        action: 'resolveUser',
+        outcome: 'denied',
+        errorCode: 'ROCK_TOKEN_REJECTED',
+      });
+
+      logSpy.mockRestore();
+    });
+
     it('returns 200 tools/list when person is resolved (regression)', async () => {
       const request = mcpRequest(
         { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} },

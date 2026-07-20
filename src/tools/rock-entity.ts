@@ -63,7 +63,11 @@ function wrongFieldReason(err: unknown): string | null {
   } catch {
     // Not JSON — use the raw body.
   }
-  return /No property or field '.+?' exists in type '.+?'/.test(message) ? message : null;
+  // Return ONLY the matched sentence, not the whole body — a 5xx message could
+  // append other text after the field error, and echoing the full body would
+  // defeat the narrow, PII-safe intent above.
+  const match = message.match(/No property or field '.+?' exists in type '.+?'/);
+  return match ? match[0] : null;
 }
 
 /**

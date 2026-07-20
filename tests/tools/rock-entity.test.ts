@@ -101,6 +101,28 @@ describe('rock_entity tool', () => {
       expect(response.ok).toBe(false);
       expect(response.error.message).not.toContain('An error has occurred.');
     });
+
+    it('re-surfaces ONLY the field-error sentence, dropping any trailing PII', async () => {
+      // A 5xx body whose Message matches the safe shape but also appends other
+      // text must not leak that trailing content to the caller.
+      const body = JSON.stringify({
+        Message:
+          "No property or field 'PersonId' exists in type 'ConnectionRequest'; internal note: secret@example.com",
+      });
+      mockClient.post.mockRejectedValue(new RockApiError(500, 'Internal Server Error', body));
+      mockClient.get.mockRejectedValue(new RockApiError(500, 'Internal Server Error', body));
+
+      const result = await rockEntityTool.handle(
+        { action: 'search', model: 'connectionrequests', where: 'PersonId == 5' },
+        null,
+        mockCtx
+      );
+      const response = JSON.parse(result.content[0].text!);
+      expect(response.ok).toBe(false);
+      expect(response.error.message).toContain("No property or field 'PersonId' exists in type 'ConnectionRequest'");
+      expect(response.error.message).not.toContain('secret@example.com');
+      expect(response.error.message).not.toContain('internal note');
+    });
   });
 
   it('should handle searchByKey action with model specified', async () => {
