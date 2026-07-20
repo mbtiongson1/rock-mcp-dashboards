@@ -124,15 +124,10 @@ export class DiscoveryService {
     const rockBaseUrl = this.rockClient.baseUrl || process.env.ROCK_PUBLIC_URL || process.env.ROCK_API_URL || process.env.ROCK_BASE_URL || 'local';
     const rockBaseUrlHash = crypto.createHash('sha256').update(rockBaseUrl).digest('hex');
     
-    let rockVersion = '17.7';
-    try {
-      const versionResult = await this.rockClient.get<any>(ctx, '/api/System/GetSystemInfo').catch(() => null);
-      if (versionResult && versionResult.Version) {
-        rockVersion = versionResult.Version;
-      }
-    } catch {
-      // Keep default
-    }
+    // Rock has no v1 REST route for version info (/api/System/GetSystemInfo 404s
+    // every time), and no consumer reads rockVersion, so we skip the probe and
+    // keep the default. Revisit only if a real version-dependent branch appears.
+    const rockVersion = '17.7';
 
     const warnings: string[] = [];
 

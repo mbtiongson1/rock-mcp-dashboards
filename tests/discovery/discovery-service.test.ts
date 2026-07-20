@@ -23,6 +23,14 @@ describe('DiscoveryService', () => {
     service = new DiscoveryService(mockClient, null);
   });
 
+  it('does not call the non-existent /api/System route during discovery', async () => {
+    await service.getMap(mockCtx);
+    const systemCalls = (mockClient.get as any).mock.calls.filter(
+      (c: any[]) => typeof c[1] === 'string' && c[1].includes('/System')
+    );
+    expect(systemCalls).toHaveLength(0);
+  });
+
   it('should lazy load and cache the discovery map', async () => {
     // Stub client calls for discovery elements
     mockClient.get = vi.fn().mockImplementation(async (_ctx, path) => {
