@@ -4,7 +4,7 @@ import { McpMode, McpScope } from '../mcp/modes.js';
 import { OAuthRockContext } from '../http/oauth.js';
 import { formatResponse } from './formatter.js';
 import { RockClient } from '../rock/client.js';
-import { quoteLinqString, quoteODataString, assertValidGuid } from '../rock/query.js';
+import { quoteLinqString, quoteODataString, assertValidGuid, odataPagination } from '../rock/query.js';
 import { AuditLogger } from '../auth/audit.js';
 import { authorizeWrite } from '../auth/authorization.js';
 import { getDefinedValueMap, resolveDefinedValueIdByName } from '../rock/defined-values.js';
@@ -973,9 +973,11 @@ export const rockPeopleTool: GatewayTool = {
             Limit: limit,
           });
         } catch {
+          // Sort before skip — Rock v1 500s on $skip without $orderby.
+          const pagination = odataPagination({ top: limit, skip: offset });
           rows = await rockClient.get<any[]>(
             ctx,
-            `/api/People?$filter=${encodeURIComponent(odataFilter)}&$top=${limit}&$skip=${offset}`
+            `/api/People?$filter=${encodeURIComponent(odataFilter)}${pagination ? `&${pagination}` : ''}`
           );
           warning = warning ? `${warning}; fell back to REST v1 for rows` : 'Fell back to REST v1 for rows';
         }

@@ -1089,6 +1089,25 @@ describe('rock_people tool', () => {
       );
     });
 
+    it('filter v1 row fallback sorts before skipping (finding #4a, latent)', async () => {
+      // Force the v2 rows path to fail so the v1 fallback runs.
+      mockClient.post.mockRejectedValue(new Error('v2 down'));
+      mockClient.get.mockResolvedValue([{ Id: 1, NickName: 'A', LastName: 'B' }]);
+
+      await rockPeopleTool.handle(
+        { action: 'filter', campusId: 1, offset: 50, limit: 25 },
+        null,
+        mockCtx
+      );
+
+      const rowCall = (mockClient.get as any).mock.calls
+        .map((c: any[]) => decodeURIComponent(String(c[1])))
+        .find((u: string) => u.includes('$skip=50'));
+      expect(rowCall).toBeDefined();
+      expect(rowCall).toContain('$orderby=Id');
+      expect(rowCall!.indexOf('$orderby')).toBeLessThan(rowCall!.indexOf('$skip'));
+    });
+
     it('resolves ConnectionStatusValueId to name in v1 fallback rows', async () => {
       mockClient.post.mockRejectedValue(new Error('v2 unavailable'));
       // GET calls happen in order:
