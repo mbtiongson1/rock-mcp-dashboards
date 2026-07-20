@@ -314,6 +314,25 @@ async function upsertMobilePhoneNumber(
 }
 
 /**
+ * Fetch a person's PhoneNumbers (v1). Phone values are NEVER serialized on the
+ * Person record itself — MobilePhoneNumber/Phone are computed C# properties —
+ * so this separate query is the only read path.
+ */
+async function getPersonPhones(
+  client: RockClient,
+  ctx: OAuthRockContext,
+  personId: number
+): Promise<Array<{ number: string; formatted?: string; typeValueId?: number; isUnlisted?: boolean }>> {
+  const rows = await client.get<any[]>(ctx, `/api/PhoneNumbers?$filter=PersonId eq ${personId}`);
+  return (rows || []).map((p: any) => ({
+    number: p.Number,
+    formatted: p.NumberFormatted,
+    typeValueId: p.NumberTypeValueId,
+    isUnlisted: p.IsUnlisted,
+  }));
+}
+
+/**
  * Fetch Group records (Id, Name, GroupTypeId) by id via a single batched v1
  * query. Avoids the `$expand=Group` navigation property, which this Rock
  * instance's OData does not expose on GroupMember ("Could not find a property
@@ -1077,8 +1096,20 @@ export const rockPeopleTool: GatewayTool = {
 
         if (isAuthorizedForSensitive) {
           profileResult.person.email = match.Email;
-          profileResult.person.phone = match.MobilePhoneNumber || match.Phone;
           profileResult.person.birthdate = match.BirthDate || (match.BirthYear ? `${match.BirthYear}-${match.BirthMonth}-${match.BirthDay}` : undefined);
+          if (typeof match.Id === 'number' && !Number.isNaN(match.Id)) {
+            try {
+              const phones = await getPersonPhones(rockClient, ctx, match.Id);
+              const mobileTypeId = await resolveMobilePhoneTypeId(rockClient, ctx).catch(() => null);
+              const preferred = (mobileTypeId && phones.find((p) => p.typeValueId === mobileTypeId)) || phones[0];
+              profileResult.person.phone = preferred?.formatted ?? preferred?.number;
+              profileResult.person.phones = phones;
+            } catch (phoneErr: any) {
+              sensitiveWarning = sensitiveWarning
+                ? `${sensitiveWarning}; phone lookup failed: ${phoneErr.message}`
+                : `Phone lookup failed: ${phoneErr.message}`;
+            }
+          }
         }
 
         // Compose included summaries if requested

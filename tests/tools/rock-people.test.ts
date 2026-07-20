@@ -174,6 +174,66 @@ describe('rock_people tool', () => {
     expect(response.result.person.email).toBe('alex@example.com');
   });
 
+  it('returns phone from the PhoneNumbers entity when includeSensitive is authorized', async () => {
+    mockCtx.mode = 'readwrite';
+    mockCtx.scopes = new Set(['read', 'write']);
+    mockCtx.rockUser = { isRsrAdmin: true, isStaff: true, ledGroupIds: [] };
+
+    mockClient.get.mockImplementation((_ctx: any, url: string) => {
+      if (url === '/api/v2/models/people/123') {
+        return Promise.resolve({ Id: 123, Guid: 'g', FirstName: 'Kate', LastName: 'Diana', Email: 'k@x.ph' });
+      }
+      if (url === '/api/PhoneNumbers?$filter=PersonId eq 123') {
+        return Promise.resolve([
+          { Id: 9, PersonId: 123, Number: '09171234567', NumberFormatted: '0917 123 4567', NumberTypeValueId: 12 },
+        ]);
+      }
+      if (url.includes('/api/DefinedTypes?')) return Promise.resolve([{ Id: 13 }]);
+      if (url.includes('/api/DefinedValues?$filter=DefinedTypeId eq 13')) {
+        return Promise.resolve([{ Id: 12, Value: 'Mobile' }]);
+      }
+      return Promise.resolve([]);
+    });
+
+    const result = await rockPeopleTool.handle(
+      { action: 'profile', person: { id: 123 }, includeSensitive: true },
+      null,
+      mockCtx
+    );
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.result.person.phone).toBe('0917 123 4567');
+    expect(response.result.person.phones).toEqual([
+      { number: '09171234567', formatted: '0917 123 4567', typeValueId: 12, isUnlisted: undefined },
+    ]);
+  });
+
+  it('keeps profile email and warns when the PhoneNumbers entity fetch fails', async () => {
+    mockCtx.mode = 'readwrite';
+    mockCtx.scopes = new Set(['read', 'write']);
+    mockCtx.rockUser = { isRsrAdmin: true, isStaff: true, ledGroupIds: [] };
+
+    mockClient.get.mockImplementation((_ctx: any, url: string) => {
+      if (url === '/api/v2/models/people/123') {
+        return Promise.resolve({ Id: 123, Guid: 'g', FirstName: 'Kate', LastName: 'Diana', Email: 'k@x.ph' });
+      }
+      if (url === '/api/PhoneNumbers?$filter=PersonId eq 123') {
+        return Promise.reject(new Error('PhoneNumbers unavailable'));
+      }
+      return Promise.resolve([]);
+    });
+
+    const result = await rockPeopleTool.handle(
+      { action: 'profile', person: { id: 123 }, includeSensitive: true },
+      null,
+      mockCtx
+    );
+    const response = JSON.parse(result.content[0].text!);
+    expect(response.ok).toBe(true);
+    expect(response.result.person.email).toBe('k@x.ph');
+    expect(response.result.person.phone).toBeUndefined();
+    expect(response.warning).toMatch(/phone lookup failed: PhoneNumbers unavailable/i);
+  });
+
   it('omits sensitive fields with a warning for non-staff readwrite callers', async () => {
     mockCtx.mode = 'readwrite';
     mockCtx.scopes = new Set(['read', 'write']);
