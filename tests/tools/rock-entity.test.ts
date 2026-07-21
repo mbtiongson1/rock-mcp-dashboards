@@ -306,6 +306,104 @@ describe('rock_entity tool', () => {
     expect(response.result[0].Number).toBe('0917');
   });
 
+  describe('ID-resolution / metadata models', () => {
+    it('allows raw search on personalias (client-typed singular) and normalizes to the plural v2 route', async () => {
+      mockClient.post.mockResolvedValue([{ Id: 4936, PersonId: 42 }]);
+
+      const result = await rockEntityTool.handle(
+        {
+          action: 'search',
+          model: 'personalias',
+          where: 'Id == 4936',
+          select: 'Id,PersonId,Person.FirstName,Person.LastName,Person.Email',
+        },
+        null,
+        mockCtx
+      );
+
+      const response = JSON.parse(result.content[0].text!);
+      expect(response.error?.code).not.toBe('MODEL_NOT_ALLOWED');
+      expect(mockClient.post).toHaveBeenCalledWith(
+        mockCtx,
+        '/api/v2/models/personaliases/search',
+        expect.objectContaining({
+          Where: 'Id == 4936',
+          Select: 'Id,PersonId,Person.FirstName,Person.LastName,Person.Email',
+        })
+      );
+      expect(response.ok).toBe(true);
+    });
+
+    it.each(['personaliases', 'entitytypes', 'categories', 'grouplocations'])(
+      'allows raw search on resolution model %s',
+      async (model) => {
+        mockClient.post.mockResolvedValue([{ Id: 1 }]);
+
+        const result = await rockEntityTool.handle(
+          { action: 'search', model, where: 'Id == 1' },
+          null,
+          mockCtx
+        );
+
+        const response = JSON.parse(result.content[0].text!);
+        expect(response.error?.code).not.toBe('MODEL_NOT_ALLOWED');
+        expect(mockClient.post).toHaveBeenCalledWith(
+          mockCtx,
+          `/api/v2/models/${model}/search`,
+          expect.objectContaining({ Where: 'Id == 1' })
+        );
+        expect(response.ok).toBe(true);
+      }
+    );
+  });
+
+  describe('select / sort forwarding', () => {
+    it('forwards Select and SortBy to the v2 search body only when provided', async () => {
+      mockClient.post.mockResolvedValue([{ Id: 1 }]);
+
+      await rockEntityTool.handle(
+        { action: 'search', model: 'people', where: 'IsActive == true', select: 'Id,LastName', sort: 'LastName' },
+        null,
+        mockCtx
+      );
+
+      expect(mockClient.post).toHaveBeenCalledWith(
+        mockCtx,
+        '/api/v2/models/people/search',
+        expect.objectContaining({ Where: 'IsActive == true', Select: 'Id,LastName', SortBy: 'LastName' })
+      );
+    });
+
+    it('omits Select/SortBy from the v2 body when the caller does not set them', async () => {
+      mockClient.post.mockResolvedValue([{ Id: 1 }]);
+
+      await rockEntityTool.handle(
+        { action: 'search', model: 'people', where: 'IsActive == true' },
+        null,
+        mockCtx
+      );
+
+      const body = (mockClient.post as any).mock.calls[0][2];
+      expect(body).not.toHaveProperty('Select');
+      expect(body).not.toHaveProperty('SortBy');
+    });
+
+    it('passes $select and the caller sort as $orderby in the v1 fallback', async () => {
+      mockClient.post.mockRejectedValue(new RockApiError(500, 'Internal Server Error', 'boom')); // force v1 fallback
+      mockClient.get.mockResolvedValue([{ Id: 1 }]);
+
+      await rockEntityTool.handle(
+        { action: 'search', model: 'people', where: 'IsActive == true', select: 'Id,LastName', sort: 'LastName' },
+        null,
+        mockCtx
+      );
+
+      const url = decodeURIComponent(String((mockClient.get as any).mock.calls[0][1]));
+      expect(url).toContain('$select=Id,LastName');
+      expect(url).toContain('$orderby=LastName');
+    });
+  });
+
   it('still rejects raw search on phonenumbers for leader-only callers', async () => {
     const leaderCtx = {
       mode: 'readonly',

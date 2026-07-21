@@ -103,6 +103,15 @@ const READ_MODEL_ALLOWLIST = new Set([
   'locations',
   'notes',
   'persons',
+  // ID-resolution / metadata models. PersonAliasId is the FK used across Rock
+  // (attendance, connection requests, notes, roster records), so resolving an
+  // alias id -> person is foundational; the others resolve EntityTypeId /
+  // CategoryId / group-location links found on those same records. All are
+  // low-PII (no giving data, no more PII than `people`, which is already allowed).
+  'personaliases',
+  'entitytypes',
+  'categories',
+  'grouplocations',
 ]);
 
 /**
@@ -194,6 +203,14 @@ const SINGULAR_TO_PLURAL: Record<string, string> = {
   note: 'notes',
   report: 'reports',
   phonenumber: 'phonenumbers',
+  // ID-resolution / metadata models: normalize the singular (and the form the
+  // client typed in the screenshot, `personalias`) to the canonical plural used
+  // by the allowlist and the v2 API path.
+  personalias: 'personaliases',
+  personaliase: 'personaliases',
+  entitytype: 'entitytypes',
+  category: 'categories',
+  grouplocation: 'grouplocations',
 };
 
 /**
@@ -215,6 +232,11 @@ function getRestV1Path(model: string): string {
   if (lower === 'userlogins' || lower === 'userlogin') return 'UserLogins';
   if (lower === 'groupmembers' || lower === 'groupmember') return 'GroupMembers';
   if (lower === 'phonenumbers' || lower === 'phonenumber') return 'PhoneNumbers';
+  // Multi-word models the default charAt-upper would mangle (e.g. 'Personaliases').
+  if (lower === 'personaliases' || lower === 'personalias') return 'PersonAliases';
+  if (lower === 'entitytypes' || lower === 'entitytype') return 'EntityTypes';
+  if (lower === 'categories' || lower === 'category') return 'Categories';
+  if (lower === 'grouplocations' || lower === 'grouplocation') return 'GroupLocations';
   return model.charAt(0).toUpperCase() + model.slice(1);
 }
 
@@ -335,7 +357,7 @@ export const rockEntityTool: GatewayTool = {
     }
 
     if (parsed.action === 'search') {
-      const { model, where, offset, limit } = parsed;
+      const { model, where, select, sort, offset, limit } = parsed;
 
       // Normalize model name (handles singular/capitalized variants like Person, Group, etc.)
       const normalizedModel = normalizeModelName(model);
@@ -352,11 +374,12 @@ export const rockEntityTool: GatewayTool = {
       }
 
       try {
-        const result = await rockClient.post(ctx, `/api/v2/models/${normalizedModel}/search`, {
-          Where: where,
-          Offset: offset,
-          Limit: limit,
-        });
+        // Select/SortBy are Rock EntitySearchQueryBag fields; forward them only
+        // when provided so an omitted projection keeps Rock's default shape.
+        const body: Record<string, unknown> = { Where: where, Offset: offset, Limit: limit };
+        if (select) body.Select = select;
+        if (sort) body.SortBy = sort;
+        const result = await rockClient.post(ctx, `/api/v2/models/${normalizedModel}/search`, body);
         return formatResponse(parsed.action, ctx, result);
       } catch (v2Err) {
         // Fall back to REST v1
@@ -367,8 +390,16 @@ export const rockEntityTool: GatewayTool = {
           if (where) {
             params.push(`$filter=${encodeURIComponent(linqToOData(where))}`);
           }
+          // Best-effort projection on v1. OData v3 `$select` does NOT expand
+          // nested navigation (e.g. `Person.Email`) the way the v2 dotted-path
+          // Select does — reliable nested projection only happens on the v2 path
+          // above; here the caller gets the top-level columns.
+          if (select) {
+            params.push(`$select=${encodeURIComponent(select)}`);
+          }
           // Always sorts before skipping — Rock 500s on $skip without $orderby.
-          const pagination = odataPagination({ top: limit, skip: offset });
+          // Honor the caller's sort when given; odataPagination defaults to `Id`.
+          const pagination = odataPagination({ top: limit, skip: offset, orderBy: sort });
           if (pagination) {
             params.push(pagination);
           }
